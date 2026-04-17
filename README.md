@@ -1,51 +1,68 @@
 # Loomis
 
-Unified local AI control plane for Windows:
+Loomis is a local AI control plane for Windows:
 - browser app shell (`app_shell/`)
 - terminal client (`npu_cli.ps1`)
-- pluggable backend registry (`registry/backends_registry.json`)
+- pluggable backends (`registry/backends_registry.json`)
 
-Loomis can run with the built-in OpenVINO backend (`npu_wrapper`) or with your own external backend, as long as it exposes the same API surface.
+You can run Loomis with the built-in OpenVINO backend (`npu_wrapper`) or an external backend that supports the same API.
 
-## Quick Start (Windows)
+## New Computer Setup
 
-1. Open PowerShell in the project root.
-2. First-time setup:
-   - built-in backend: `.\portable_setup.ps1`
-   - already configured: `.\start_app.ps1`
-3. App shell opens at `http://localhost:5173`
-4. API base is `http://localhost:8000/v1` by default.
+### Default install (recommended)
 
-If PowerShell blocks scripts:
+1. Install [Git for Windows](https://git-scm.com/download/win)
+2. Run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/est4ever/Loomis/main/install.ps1' -UseBasicParsing)))"
+```
+
+3. Then:
+
+```powershell
+cd $env:USERPROFILE\Loomis
+.\portable_setup.ps1
+```
+
+### Shell-only install (external backend users)
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/est4ever/Loomis/main/install.ps1' -UseBasicParsing))) -ShellOnly"
+```
+
+Then configure `registry\backends_registry.json` (`type: "external"`, valid `entrypoint`) and run `.\start_app.ps1`.
+
+### If scripts are blocked
 
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 ```
 
-## What Loomis Includes
+## Daily Use
 
-- **App shell UI** for status, model/backend registry, device/policy, feature toggles, and metrics.
-- **CLI** for terminal chat and control commands via `npu_cli.ps1`.
-- **Registry-driven backend selection**:
-  - `builtin` for `npu_wrapper`
-  - `external` for your own server process
-
-## Common Commands
-
-### Start / Stop
+Start stack:
 
 ```powershell
 .\start_app.ps1
 ```
 
-### Terminal Chat
+- App shell: `http://localhost:5173`
+- API base (default): `http://localhost:8000/v1`
+
+Chat from terminal:
 
 ```powershell
-.\npu_cli.ps1 -Command chat -Arguments "hello"
 .\npu_cli.ps1
 ```
 
-### Runtime Control
+One-shot chat:
+
+```powershell
+.\npu_cli.ps1 -Command chat -Arguments "hello"
+```
+
+Useful runtime controls:
 
 ```powershell
 .\npu_cli.ps1 -Command status
@@ -55,73 +72,73 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 .\npu_cli.ps1 -Command metrics -Arguments "last"
 ```
 
-### Build (developers)
+## Release Asset (for installer)
+
+`install.ps1` expects this exact GitHub Release asset name:
+- `loomis-dist-windows-x64.zip`
+
+The zip must contain the contents of `dist\` at zip root.
+
+Create/update from repo root:
 
 ```powershell
-.\build.ps1
+Compress-Archive -Path (Join-Path $PWD 'dist\*') -DestinationPath loomis-dist-windows-x64.zip -Force
 ```
 
-## Registries (Persistent Local State)
+## Persistence and Registries
 
-Loomis stores local selections in:
+Local runtime state is stored in:
 - `registry/models_registry.json`
 - `registry/backends_registry.json`
 
-On a fresh clone, copy templates or run setup:
+On fresh clone, either run `.\portable_setup.ps1` or copy:
 - `registry/models_registry.example.json` -> `registry/models_registry.json`
 - `registry/backends_registry.example.json` -> `registry/backends_registry.json`
-- or run `.\portable_setup.ps1`
 
-These files are intentionally not tracked in git because they contain machine-specific paths.
+These machine-specific `registry/*.json` files are intentionally not tracked in git.
 
 ## Built-in vs External Backend
 
-### Built-in (`npu_wrapper`)
-- `type: "builtin"`
-- typical `entrypoint`: `dist/npu_wrapper.exe`
-- `run.ps1` sets up OpenVINO runtime automatically
-
-### External
-- `type: "external"`
-- `entrypoint`: your executable/script
-- backend must expose Loomis API endpoints (for app shell + CLI to work)
+- `builtin`: usually `dist/npu_wrapper.exe`; `run.ps1` prepares OpenVINO env.
+- `external`: your own executable/script; must provide Loomis API endpoints used by app shell and CLI.
 
 ## Model Notes
 
-- This repo does not ship model weights.
-- For the built-in backend, selected model paths should point to **OpenVINO IR** folders (contain `.xml` + weights).
-- GGUF entries can be kept for tracking but are not directly runnable by `npu_wrapper` until converted/exported to IR.
+- This repository does not ship model weights.
+- Built-in backend requires OpenVINO IR model folders (contain `.xml` + weights).
+- GGUF entries may be tracked in registry, but are not directly runnable by `npu_wrapper` until converted/exported to IR.
 
 ## Troubleshooting
 
-### 1) Added models/backends disappear after restart
+- **Model/backend seems to disappear after restart**
+  - Launch via `.\start_app.ps1` / `.\run.ps1` so registry paths stay consistent.
 
-Use project launch scripts (`.\start_app.ps1`, `.\run.ps1`) so registry paths resolve consistently from project root.
+- **CLI cannot connect**
+  - Wait a few seconds (backend may be restarting), then retry.
+  - Start stack again with `.\start_app.ps1`.
+  - Check backend terminal output for bad entrypoint/path/runtime failures.
 
-### 2) CLI cannot connect
+- **Built-in backend fails to start**
+  - Confirm `dist/npu_wrapper.exe` exists.
+  - Confirm OpenVINO runtime is available (bundled DLLs or valid `OPENVINO_GENAI_DIR`).
+  - Rebuild with `.\build.ps1` if needed.
 
-- Backend may still be starting/restarting
-- Wait a few seconds and retry
-- Run `.\start_app.ps1`
-- Check backend terminal output for bad entrypoint/path/runtime errors
+- **Model load failure**
+  - Confirm selected model path exists and contains OpenVINO IR `.xml`.
+  - Re-import/select model in app shell or update `registry/models_registry.json`.
 
-### 3) Built-in backend fails to start
+## Developer Docs
 
-- Verify `dist/npu_wrapper.exe` exists
-- Verify OpenVINO runtime is available (bundled `dist\` DLLs or valid `OPENVINO_GENAI_DIR`)
-- Rebuild with `.\build.ps1` if needed
+- `ARCHITECTURE.md`
+- `API_CONTRACT_V1.md`
+- `CLI_USAGE.md`
+- `PUBLISH_GUIDE.md`
 
-### 4) No model found / model load failure
+## Repo vs Release Contents
 
-- Confirm selected model path exists
-- Confirm folder contains OpenVINO IR `.xml`
-- Update `registry/models_registry.json` or re-import the model in the app shell
-
-## Developer Notes
-
-- Architecture and implementation details: `ARCHITECTURE.md`
-- API contract details: `API_CONTRACT_V1.md`
-- CLI behavior details: `CLI_USAGE.md`
+- **Repository:** source, scripts, docs, `app_shell`, `registry/*.example.json`
+- **Releases:** optional runtime bundle zip (`loomis-dist-windows-x64.zip`)
+- **Do not commit:** machine-specific `registry/*.json`, model files, build outputs
 
 ## License
 
