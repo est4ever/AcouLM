@@ -7,6 +7,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <psapi.h>
 #include <nlohmann/json.hpp>
 #include <iostream>
 #include <sstream>
@@ -20,8 +21,13 @@
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <map>
+#include <cstdio>
+#include <cstdlib>
+#include <set>
 #include <openvino/openvino.hpp>
 #include "../OpenVINO/Backend/KVCacheMonitor.h"
+#pragma comment(lib, "Psapi.lib")
 
 using json = nlohmann::json;
 
@@ -83,6 +89,97 @@ const std::filesystem::path& restart_script_path() {
     static const std::filesystem::path path = project_root_path() / "restart_backend.ps1";
     return path;
 }
+
+const std::filesystem::path& restart_stack_script_path() {
+    static const std::filesystem::path path = project_root_path() / "restart_stack.ps1";
+    return path;
+}
+
+const std::filesystem::path& last_error_log_path() {
+    static const std::filesystem::path path = registry_dir_path() / "loomis_last_error.txt";
+    return path;
+}
+
+json analyze_model_path_fs(const std::filesystem::path& resolved, const std::string& format_lower) {
+    json r;
+    std::error_code ec;
+    if (!std::filesystem::exists(resolved, ec)) {
+        r["exists"] = false;
+        r["runnable_hint"] = "missing";
+        return r;
+    }
+    r["exists"] = true;
+    if (std::filesystem::is_regular_file(resolved, ec)) {
+        r["kind"] = "file";
+        std::string ext = resolved.extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        const bool is_gguf = (ext == ".gguf");
+        r["gguf"] = is_gguf;
+        r["runnable_hint"] = is_gguf ? "likely_gguf" : "unknown_file";
+        return r;
+    }
+    if (!std::filesystem::is_directory(resolved, ec)) {
+        r["runnable_hint"] = "unknown";
+        return r;
+    }
+    r["kind"] = "directory";
+    bool has_xml = false;
+    int gguf_count = 0;
+    bool has_st = false;
+    for (const auto& e : std::filesystem::directory_iterator(resolved, ec)) {
+        if (!e.is_regular_file()) {
+            continue;
+        }
+        std::string ext = e.path().extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (ext == ".xml") {
+            has_xml = true;
+        }
+        if (ext == ".gguf") {
+            ++gguf_count;
+        }
+        if (ext == ".safetensors") {
+            has_st = true;
+        }
+    }
+    r["openvino_ir"] = has_xml;
+    r["gguf_count"] = gguf_count;
+    r["has_safetensors"] = has_st;
+    std::string hint = "unknown";
+    if (has_xml) {
+        hint = "openvino_ir";
+    } else if (gguf_count == 1) {
+        hint = "single_gguf";
+    } else if (gguf_count > 1) {
+        hint = "multiple_gguf_ambiguous";
+    } else if (has_st) {
+        hint = "hf_safetensors_needs_export";
+    }
+    r["runnable_hint"] = hint;
+    return r;
+}
+
+json try_http_get_localhost(int port, const char* path) {
+    const std::string base = "http://127.0.0.1:" + std::to_string(port);
+    httplib::Client cli(base.c_str());
+    cli.set_connection_timeout(0, 400);
+    cli.set_read_timeout(1, 0);
+    auto res = cli.Get(path);
+    json out;
+    out["port"] = port;
+    if (!res) {
+        out["reachable"] = false;
+        out["status"] = 0;
+        return out;
+    }
+    out["reachable"] = res->status >= 200 && res->status < 500;
+    out["status"] = res->status;
+    return out;
+}
 }
 
 void save_npu_launch_state(int argc, char** argv) {
@@ -111,6 +208,34 @@ RestAPIServer::RestAPIServer(BackendPool* pool, RuntimeConfig* config, int port)
 namespace {
 std::mutex g_metrics_file_mutex;
 std::atomic<int> g_active_chat_requests{0};
+
+std::optional<json> current_process_memory_json() {
+    const auto to_mb = [](SIZE_T bytes) -> int64_t {
+        return static_cast<int64_t>(bytes / (1024ull * 1024ull));
+    };
+
+    PROCESS_MEMORY_COUNTERS_EX pmc_ex{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc_ex), sizeof(pmc_ex))) {
+        return json{
+            {"pid", static_cast<int64_t>(GetCurrentProcessId())},
+            {"working_set_mb", to_mb(pmc_ex.WorkingSetSize)},
+            {"private_mb", to_mb(pmc_ex.PrivateUsage)},
+            {"peak_working_set_mb", to_mb(pmc_ex.PeakWorkingSetSize)}
+        };
+    }
+
+    PROCESS_MEMORY_COUNTERS pmc{};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        return json{
+            {"pid", static_cast<int64_t>(GetCurrentProcessId())},
+            {"working_set_mb", to_mb(pmc.WorkingSetSize)},
+            {"private_mb", to_mb(pmc.PagefileUsage)},
+            {"peak_working_set_mb", to_mb(pmc.PeakWorkingSetSize)}
+        };
+    }
+
+    return std::nullopt;
+}
 
 json probe_available_devices() {
     json devices = json::array();
@@ -195,6 +320,7 @@ void ensure_registry_dir() {
 json default_models_registry() {
     return {
         {"schema", 1},
+        {"auto_select_best_model", false},
         {"selected_model", "openvino-local"},
         {"models", json::array({
             {
@@ -313,8 +439,76 @@ json load_models_registry() {
     if (!reg.contains("models") || !reg["models"].is_array()) {
         reg["models"] = json::array();
     }
+    if (!reg.contains("auto_select_best_model") || !reg["auto_select_best_model"].is_boolean()) {
+        reg["auto_select_best_model"] = false;
+    }
     if (!reg.contains("selected_model") || !reg["selected_model"].is_string()) {
         reg["selected_model"] = "openvino-local";
+    }
+    return reg;
+}
+
+std::filesystem::path resolve_registry_model_path(const std::string& model_path_raw) {
+    auto trim_ws = [](const std::string& s) {
+        const auto begin = std::find_if_not(s.begin(), s.end(), [](unsigned char ch) { return std::isspace(ch) != 0; });
+        if (begin == s.end()) {
+            return std::string();
+        }
+        const auto end = std::find_if_not(s.rbegin(), s.rend(), [](unsigned char ch) { return std::isspace(ch) != 0; }).base();
+        return std::string(begin, end);
+    };
+    std::string path_str = trim_ws(model_path_raw);
+    if (path_str.empty()) {
+        return {};
+    }
+    if ((path_str.front() == '"' && path_str.back() == '"') ||
+        (path_str.front() == '\'' && path_str.back() == '\'')) {
+        if (path_str.size() >= 2) {
+            path_str = path_str.substr(1, path_str.size() - 2);
+        }
+    }
+    std::filesystem::path p(path_str);
+    if (p.is_relative()) {
+        p = project_root_path() / p;
+    }
+    return p.lexically_normal();
+}
+
+json visible_models_registry(json reg) {
+    if (!reg.contains("models") || !reg["models"].is_array()) {
+        reg["models"] = json::array();
+        reg["selected_model"] = "";
+        return reg;
+    }
+
+    const std::string selected = reg.value("selected_model", "");
+    json visible = json::array();
+    for (const auto& item : reg["models"]) {
+        if (!item.is_object()) {
+            continue;
+        }
+        const std::string path_raw = item.value("path", "");
+        const auto resolved = resolve_registry_model_path(path_raw);
+        std::error_code ec;
+        if (!resolved.empty() && std::filesystem::exists(resolved, ec) && !ec) {
+            visible.push_back(item);
+        }
+    }
+
+    reg["models"] = visible;
+    bool selected_visible = false;
+    for (const auto& item : visible) {
+        if (item.is_object() && item.value("id", "") == selected) {
+            selected_visible = true;
+            break;
+        }
+    }
+    if (!selected.empty() && selected_visible) {
+        reg["selected_model"] = selected;
+    } else if (!visible.empty()) {
+        reg["selected_model"] = visible[0].value("id", "");
+    } else {
+        reg["selected_model"] = "";
     }
     return reg;
 }
@@ -372,8 +566,8 @@ std::string registry_model_format(const json& models, const std::string& id) {
 // Human-facing hint when registry format will not load in npu_wrapper (OpenVINO GenAI / IR).
 std::string npu_wrapper_format_warning(const std::string& format_lower) {
     if (format_lower == "gguf") {
-        return "GGUF is not loadable by npu_wrapper. Keep this entry to track downloads; "
-               "select a model whose folder contains OpenVINO IR (.xml). Convert or use a packaged IR model to run inference.";
+        return "GGUF entries use OpenVINO GenAI direct GGUF loading when you point at a single .gguf or a folder with one .gguf "
+               "(GenAI 2025.2+, preview; not all models/devices). IR (.xml) folders are still supported. If load fails, export IR or check toolkit version.";
     }
     if (format_lower == "pytorch" || format_lower == "pt" || format_lower == "safetensors" || format_lower == "hf") {
         return "This format is not loaded directly by npu_wrapper. Export to OpenVINO IR and point path at that folder to run inference.";
@@ -704,7 +898,7 @@ RestAPIServer::RestAPIServer(BackendPool* pool, RuntimeConfig* config, KVCacheMo
     server_->set_default_headers({
         {"Access-Control-Allow-Origin", "*"},
         {"Access-Control-Allow-Methods", "GET, POST, OPTIONS"},
-        {"Access-Control-Allow-Headers", "Content-Type, Authorization"}
+        {"Access-Control-Allow-Headers", "Content-Type, Authorization, x-npu-cli"}
     });
     
     // Register endpoints
@@ -777,6 +971,10 @@ RestAPIServer::RestAPIServer(BackendPool* pool, RuntimeConfig* config, KVCacheMo
         handle_cli_model_rename(req, res);
     });
 
+    server_->Post("/v1/cli/model/auto-select", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_cli_model_auto_select(req, res);
+    });
+
     server_->Get("/v1/cli/backend/list", [this](const httplib::Request& req, httplib::Response& res) {
         handle_cli_backend_list(req, res);
     });
@@ -791,6 +989,34 @@ RestAPIServer::RestAPIServer(BackendPool* pool, RuntimeConfig* config, KVCacheMo
 
     server_->Post("/v1/cli/backend/restart", [this](const httplib::Request& req, httplib::Response& res) {
         handle_cli_backend_restart(req, res);
+    });
+
+    server_->Get("/v1/cli/readiness", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_cli_readiness(req, res);
+    });
+
+    server_->Post("/v1/cli/model/validate", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_cli_model_validate(req, res);
+    });
+
+    server_->Get("/v1/cli/backend/probe", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_cli_backend_probe(req, res);
+    });
+
+    server_->Post("/v1/cli/stack/restart", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_cli_stack_restart(req, res);
+    });
+
+    server_->Get("/v1/cli/metrics/recommendation", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_cli_metrics_recommendation(req, res);
+    });
+
+    server_->Get("/v1/cli/models/discover", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_cli_models_discover(req, res);
+    });
+
+    server_->Post("/v1/cli/diagnostics/export", [this](const httplib::Request& req, httplib::Response& res) {
+        handle_cli_diagnostics_export(req, res);
     });
     
     server_->Options(".*", [](const httplib::Request&, httplib::Response& res) {
@@ -1194,9 +1420,10 @@ void RestAPIServer::handle_cli_status(const httplib::Request& req, httplib::Resp
             {"throughput", metrics.throughput}
         };
 
-        const json models_reg = load_models_registry();
+        const json models_reg = visible_models_registry(load_models_registry());
         const json backends_reg = load_backends_registry();
         response["selected_model"] = models_reg.value("selected_model", "openvino-local");
+        response["auto_select_best_model"] = models_reg.value("auto_select_best_model", false);
         response["selected_backend"] = backends_reg.value("selected_backend", "openvino");
         
         if (config_->get_split_prefill()) {
@@ -1542,6 +1769,10 @@ void RestAPIServer::handle_cli_memory(const httplib::Request& req, httplib::Resp
             }}
         };
 
+        if (const auto proc = current_process_memory_json(); proc.has_value()) {
+            response["process"] = proc.value();
+        }
+
         if (config_->get_enable_kv_paging()) {
             response["evidence"] = "INT8 KV-cache optimization is enabled; compare ram.used_mb / usage_percent before and after long prompts.";
         } else {
@@ -1562,7 +1793,7 @@ void RestAPIServer::handle_cli_memory(const httplib::Request& req, httplib::Resp
 
 void RestAPIServer::handle_cli_model_list(const httplib::Request& req, httplib::Response& res) {
     try {
-        json models_reg = load_models_registry();
+        json models_reg = visible_models_registry(load_models_registry());
         set_json_response(res, models_reg);
     } catch (const std::exception& e) {
         set_error_response(
@@ -1787,6 +2018,48 @@ void RestAPIServer::handle_cli_model_rename(const httplib::Request& req, httplib
     }
 }
 
+void RestAPIServer::handle_cli_model_auto_select(const httplib::Request& req, httplib::Response& res) {
+    try {
+        json body = json::parse(req.body);
+        if (!body.contains("enabled")) {
+            set_error_response(
+                res,
+                400,
+                "missing_required_fields",
+                "enabled is required",
+                json{{"required", json::array({"enabled"})}}
+            );
+            return;
+        }
+        const bool enabled = body.value("enabled", false);
+        json models_reg = load_models_registry();
+        models_reg["auto_select_best_model"] = enabled;
+        save_registry(models_registry_path().string(), models_reg);
+
+        set_json_response(res, json({
+            {"success", true},
+            {"auto_select_best_model", enabled},
+            {"note", "Saved. Applies on next .\\start_app.ps1 launch."}
+        }));
+    } catch (const json::exception& e) {
+        set_error_response(
+            res,
+            400,
+            "invalid_json",
+            "Invalid JSON in request body",
+            json{{"exception", e.what()}}
+        );
+    } catch (const std::exception& e) {
+        set_error_response(
+            res,
+            500,
+            "model_auto_select_update_failed",
+            "Failed to update auto-select model setting",
+            json{{"exception", e.what()}}
+        );
+    }
+}
+
 void RestAPIServer::handle_cli_backend_list(const httplib::Request& req, httplib::Response& res) {
     try {
         json backends_reg = load_backends_registry();
@@ -1976,6 +2249,279 @@ void RestAPIServer::handle_cli_backend_restart(const httplib::Request&, httplib:
             "Failed to schedule restart",
             json{{"exception", e.what()}}
         );
+    }
+}
+
+void RestAPIServer::handle_cli_readiness(const httplib::Request&, httplib::Response& res) {
+    try {
+        json out;
+        out["api_port"] = port_;
+        out["app_shell_5173"] = try_http_get_localhost(5173, "/");
+        out["api_health"] = try_http_get_localhost(port_, "/v1/health");
+        const json models = load_models_registry();
+        const std::string sel = models.value("selected_model", "");
+        out["selected_model_id"] = sel;
+        for (const auto& m : models["models"]) {
+            if (!m.is_object() || m.value("id", "") != sel) {
+                continue;
+            }
+            const std::string p = m.value("path", "");
+            const auto resolved = resolve_registry_model_path(p);
+            out["model_path"] = resolved.string();
+            out["model_analysis"] = analyze_model_path_fs(resolved, to_lower_copy(m.value("format", "")));
+            break;
+        }
+        std::string last;
+        if (std::filesystem::exists(last_error_log_path())) {
+            std::ifstream fin(last_error_log_path().string());
+            std::stringstream buf;
+            buf << fin.rdbuf();
+            last = buf.str();
+        }
+        if (last.size() > 2000) {
+            last = last.substr(0, 2000) + "...";
+        }
+        out["last_error"] = last.empty() ? json(nullptr) : json(last);
+        set_json_response(res, out);
+    } catch (const std::exception& e) {
+        set_error_response(res, 500, "readiness_failed", e.what());
+    }
+}
+
+void RestAPIServer::handle_cli_model_validate(const httplib::Request& req, httplib::Response& res) {
+    try {
+        json body = json::parse(req.body);
+        std::string id = trim_copy(body.value("id", ""));
+        json models = load_models_registry();
+        if (id.empty()) {
+            id = models.value("selected_model", "");
+        }
+        for (const auto& m : models["models"]) {
+            if (!m.is_object() || m.value("id", "") != id) {
+                continue;
+            }
+            const auto resolved = resolve_registry_model_path(m.value("path", ""));
+            json out = {
+                {"success", true},
+                {"id", id},
+                {"path", resolved.string()},
+                {"analysis", analyze_model_path_fs(resolved, to_lower_copy(m.value("format", "")))}
+            };
+            set_json_response(res, out);
+            return;
+        }
+        set_error_response(res, 404, "model_not_found", "Model not found: " + id);
+    } catch (const json::exception& e) {
+        set_error_response(res, 400, "invalid_json", e.what());
+    } catch (const std::exception& e) {
+        set_error_response(res, 500, "model_validate_failed", e.what());
+    }
+}
+
+void RestAPIServer::handle_cli_backend_probe(const httplib::Request&, httplib::Response& res) {
+    json r = { {"ok", true}, {"v1_health_check", try_http_get_localhost(port_, "/v1/health")} };
+    set_json_response(res, r);
+}
+
+void RestAPIServer::handle_cli_stack_restart(const httplib::Request&, httplib::Response& res) {
+    try {
+        if (!std::filesystem::exists(restart_stack_script_path())) {
+            set_error_response(
+                res,
+                500,
+                "restart_stack_script_missing",
+                "restart_stack.ps1 not found in project root."
+            );
+            return;
+        }
+        const std::string root = project_root_path().string();
+        const std::string script = restart_stack_script_path().string();
+        set_json_response(res, json({ {"success", true}, {"note", "Full stack restart scheduled (backend + app shell)."} }));
+        std::thread([root, script]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            std::string cmd =
+                "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Normal -File \"" + script + "\"";
+            STARTUPINFOA si{};
+            si.cb = sizeof(si);
+            PROCESS_INFORMATION pi{};
+            std::vector<char> cmdline(cmd.begin(), cmd.end());
+            cmdline.push_back('\0');
+            CreateProcessA(
+                nullptr,
+                cmdline.data(),
+                nullptr,
+                nullptr,
+                FALSE,
+                0,
+                nullptr,
+                root.c_str(),
+                &si,
+                &pi);
+            if (pi.hThread) {
+                CloseHandle(pi.hThread);
+            }
+            if (pi.hProcess) {
+                CloseHandle(pi.hProcess);
+            }
+        }).detach();
+    } catch (const std::exception& e) {
+        set_error_response(res, 500, "stack_restart_failed", e.what());
+    }
+}
+
+void RestAPIServer::handle_cli_metrics_recommendation(const httplib::Request&, httplib::Response& res) {
+    try {
+        const auto records = read_all_metrics_records();
+        std::map<std::string, std::vector<double>> tps;
+        for (const auto& r : records) {
+            if (!r.is_object() || !r.contains("device") || !r.contains("throughput_tok_s")) {
+                continue;
+            }
+            const std::string dev = r["device"].get<std::string>();
+            if (!r["throughput_tok_s"].is_number()) {
+                continue;
+            }
+            const double v = r["throughput_tok_s"].get<double>();
+            if (v > 0) {
+                tps[dev].push_back(v);
+            }
+        }
+        std::string best;
+        double best_avg = -1.0;
+        json detail = json::object();
+        for (const auto& e : tps) {
+            double s = 0.0;
+            for (double x : e.second) {
+                s += x;
+            }
+            const double avg = e.second.empty() ? 0.0 : s / static_cast<double>(e.second.size());
+            detail[e.first] = { {"count", e.second.size()}, {"avg_throughput", avg} };
+            if (avg > best_avg) {
+                best_avg = avg;
+                best = e.first;
+            }
+        }
+        json out;
+        if (best.empty()) {
+            out["suggested_device"] = nullptr;
+            out["avg_throughput"] = 0.0;
+        } else {
+            out["suggested_device"] = best;
+            out["avg_throughput"] = best_avg;
+        }
+        out["by_device"] = detail;
+        set_json_response(res, out);
+    } catch (const std::exception& e) {
+        set_error_response(res, 500, "recommendation_failed", e.what());
+    }
+}
+
+void RestAPIServer::handle_cli_models_discover(const httplib::Request&, httplib::Response& res) {
+    try {
+        const json models = load_models_registry();
+        std::set<std::string> known;
+        const std::filesystem::path models_base = (project_root_path() / "models").lexically_normal();
+        for (const auto& m : models["models"]) {
+            if (!m.is_object()) {
+                continue;
+            }
+            const std::string p = m.value("path", "");
+            std::string rest;
+            if (p.rfind("./models/", 0) == 0) {
+                rest = p.substr(9);
+            } else if (p.rfind("models/", 0) == 0) {
+                rest = p.substr(7);
+            } else {
+                const auto abs = resolve_registry_model_path(p);
+                std::error_code ec;
+                if (abs.empty() || !std::filesystem::exists(abs, ec)) {
+                    continue;
+                }
+                try {
+                    std::string child;
+                    if (std::filesystem::is_directory(abs, ec)) {
+                        const auto rel = std::filesystem::relative(abs, models_base, ec);
+                        if (!ec) {
+                            child = rel.string();
+                        }
+                    } else {
+                        const auto rel = std::filesystem::relative(abs.parent_path(), models_base, ec);
+                        if (!ec) {
+                            child = rel.string();
+                        }
+                    }
+                    if (!child.empty()) {
+                        const size_t nxt = child.find_first_of("/\\");
+                        if (nxt == std::string::npos) {
+                            known.insert(child);
+                        } else {
+                            known.insert(child.substr(0, nxt));
+                        }
+                    }
+                } catch (...) {
+                }
+                continue;
+            }
+            if (!rest.empty()) {
+                const size_t nxt = rest.find_first_of("/\\");
+                if (nxt == std::string::npos) {
+                    known.insert(rest);
+                } else {
+                    known.insert(rest.substr(0, nxt));
+                }
+            }
+        }
+        json arr = json::array();
+        std::error_code ec;
+        if (std::filesystem::exists(models_base, ec) && std::filesystem::is_directory(models_base, ec)) {
+            for (const auto& e : std::filesystem::directory_iterator(models_base, ec)) {
+                if (!e.is_directory()) {
+                    continue;
+                }
+                const std::string name = e.path().filename().string();
+                if (known.find(name) == known.end()) {
+                    arr.push_back({ {"folder", name}, {"path", "./models/" + name} });
+                }
+            }
+        }
+        set_json_response(res, { {"unregistered", arr} });
+    } catch (const std::exception& e) {
+        set_error_response(res, 500, "discover_failed", e.what());
+    }
+}
+
+void RestAPIServer::handle_cli_diagnostics_export(const httplib::Request&, httplib::Response& res) {
+    try {
+        const std::filesystem::path root = project_root_path();
+        const std::filesystem::path script = root / "Export-Diagnostics.ps1";
+        if (!std::filesystem::exists(script)) {
+            set_error_response(
+                res,
+                500,
+                "export_script_missing",
+                "Export-Diagnostics.ps1 not found in project root."
+            );
+            return;
+        }
+        const std::string cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" + script.string() + "\"";
+        const int r = std::system(cmd.c_str());
+        (void)r;
+        const std::filesystem::path marker = root / "export" / "last-export.txt";
+        if (!std::filesystem::exists(marker)) {
+            set_error_response(
+                res,
+                500,
+                "export_failed",
+                "Diagnostics export did not produce export/last-export.txt. Run .\\Export-Diagnostics.ps1 manually."
+            );
+            return;
+        }
+        std::ifstream fin(marker.string());
+        std::string p;
+        std::getline(fin, p);
+        set_json_response(res, { {"success", true}, {"zip_path", p} });
+    } catch (const std::exception& e) {
+        set_error_response(res, 500, "export_exception", e.what());
     }
 }
 

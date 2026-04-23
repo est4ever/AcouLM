@@ -5,12 +5,22 @@ param(
     [int]$AppPort = 5173,
     [int]$TimeoutSeconds = 120,
     [switch]$HideServiceWindows,
-    [string[]]$BackendArgs = @()
+    [string[]]$BackendArgs = @(),
+    [switch]$AutoExportIr,
+    [switch]$NoAutoExportIr,
+    [switch]$AutoSelectBestModel
 )
 
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $scriptDir
+$autoExportIr = $true
+if ($env:LOOMIS_AUTO_EXPORT_IR -eq "0") { $autoExportIr = $false }
+if ($env:LOOMIS_AUTO_EXPORT_IR -eq "1") { $autoExportIr = $true }
+if ($NoAutoExportIr) { $autoExportIr = $false }
+if ($AutoExportIr) { $autoExportIr = $true }
+$autoSelectBestModel = $false
+$autoSelectModelEnv = [string]$env:LOOMIS_AUTO_SELECT_MODEL
 
 function Normalize-ModelPathString {
     param([string]$Path)
@@ -62,6 +72,42 @@ function Get-RegistrySelectedModel {
     return $result
 }
 
+function Get-RegistryModels {
+    param([string]$ProjectRoot)
+    $result = @()
+    $modelsRegistry = Join-Path $ProjectRoot "registry\models_registry.json"
+    if (-not (Test-Path -LiteralPath $modelsRegistry)) { return $result }
+    try {
+        $reg = Get-Content -LiteralPath $modelsRegistry -Raw | ConvertFrom-Json
+        foreach ($m in @($reg.models)) {
+            if ($null -eq $m) { continue }
+            $id = [string]$m.id
+            $path = Normalize-ModelPathString ([string]$m.path)
+            if ([string]::IsNullOrWhiteSpace($path)) { continue }
+            $fmt = if ($m.format) { [string]$m.format } else { "" }
+            $result += [pscustomobject]@{
+                Id = $id
+                Path = $path
+                Format = $fmt
+            }
+        }
+    } catch {}
+    return $result
+}
+
+function Get-RegistryAutoSelectBestModel {
+    param([string]$ProjectRoot)
+    $modelsRegistry = Join-Path $ProjectRoot "registry\models_registry.json"
+    if (-not (Test-Path -LiteralPath $modelsRegistry)) { return $null }
+    try {
+        $reg = Get-Content -LiteralPath $modelsRegistry -Raw | ConvertFrom-Json
+        if ($reg.PSObject.Properties.Name -contains "auto_select_best_model") {
+            return [bool]$reg.auto_select_best_model
+        }
+    } catch {}
+    return $null
+}
+
 function Resolve-FullModelDirectory {
     param(
         [string]$ModelPath,
@@ -76,12 +122,134 @@ function Resolve-FullModelDirectory {
     return [System.IO.Path]::GetFullPath((Join-Path $ProjectRoot $rel))
 }
 
+function Get-PathSizeMB {
+    param([string]$FullPath)
+    if ([string]::IsNullOrWhiteSpace($FullPath) -or -not (Test-Path -LiteralPath $FullPath)) { return 0.0 }
+    try {
+        if (Test-Path -LiteralPath $FullPath -PathType Leaf) {
+            return [math]::Round(((Get-Item -LiteralPath $FullPath).Length / 1MB), 2)
+        }
+        $sum = (Get-ChildItem -LiteralPath $FullPath -Recurse -File -ErrorAction SilentlyContinue | Measure-Object -Property Length -Sum).Sum
+        if ($null -eq $sum) { return 0.0 }
+        return [math]::Round(($sum / 1MB), 2)
+    } catch {
+        return 0.0
+    }
+}
+
 function Test-DirHasOpenVINOIr {
     param([string]$FullPath)
     if ([string]::IsNullOrWhiteSpace($FullPath)) { return $false }
     if (-not (Test-Path -LiteralPath $FullPath -PathType Container)) { return $false }
     $xml = Get-ChildItem -LiteralPath $FullPath -Filter "*.xml" -File -ErrorAction SilentlyContinue | Select-Object -First 1
     return [bool]$xml
+}
+
+function Test-DirIsHfCheckpointWithoutIr {
+    param([string]$FullPath)
+    if ([string]::IsNullOrWhiteSpace($FullPath)) { return $false }
+    if (-not (Test-Path -LiteralPath $FullPath -PathType Container)) { return $false }
+    if (Test-DirHasOpenVINOIr -FullPath $FullPath) { return $false }
+    $st = @(Get-ChildItem -LiteralPath $FullPath -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '\.(?i)safetensors$' })
+    return ($st.Count -gt 0)
+}
+
+# OpenVINO GenAI LLMPipeline accepts an IR model directory or a path to a single .gguf (2025.2+ preview for GGUF).
+function Try-ResolveRunnableModelBackendFull {
+    param(
+        [string]$RelPath,
+        [string]$ProjectRoot,
+        [ref]$BackendFullOut,
+        [ref]$AmbiguousGgufOut
+    )
+    $AmbiguousGgufOut.Value = $false
+    $BackendFullOut.Value = $null
+    $full = Resolve-FullModelDirectory -ModelPath $RelPath -ProjectRoot $ProjectRoot
+    if (-not $full -or -not (Test-Path -LiteralPath $full)) { return $false }
+
+    if (Test-Path -LiteralPath $full -PathType Leaf) {
+        if ($full -match '\.(?i)gguf$') {
+            $BackendFullOut.Value = $full
+            return $true
+        }
+        return $false
+    }
+
+    if (Test-DirHasOpenVINOIr -FullPath $full) {
+        $BackendFullOut.Value = $full
+        return $true
+    }
+
+    $ggufs = @(Get-ChildItem -LiteralPath $full -Filter "*.gguf" -File -ErrorAction SilentlyContinue | Sort-Object Name)
+    if ($ggufs.Count -eq 1) {
+        $BackendFullOut.Value = $ggufs[0].FullName
+        return $true
+    }
+    if ($ggufs.Count -gt 1) {
+        $AmbiguousGgufOut.Value = $true
+    }
+    return $false
+}
+
+function Get-UnrunnableModelFolderHint {
+    param([string]$FullPath)
+    if ([string]::IsNullOrWhiteSpace($FullPath)) { return "" }
+    if (-not (Test-Path -LiteralPath $FullPath -PathType Container)) { return "" }
+    $files = @(Get-ChildItem -LiteralPath $FullPath -File -Force -ErrorAction SilentlyContinue)
+    if ($files.Count -eq 0) {
+        return "`n`nThis folder has no weight files (empty or download matched nothing). Re-run portable_setup.ps1: leave Files/patterns blank for a full repo, or use valid Hub globs (e.g. model.safetensors*,config.json,...)."
+    }
+    $hasSafetensors = $false
+    foreach ($f in $files) {
+        if ($f.Name -match '\.(?i)safetensors$') {
+            $hasSafetensors = $true
+            break
+        }
+    }
+    if ($hasSafetensors) {
+        return @"
+
+Detected Hugging Face weights (.safetensors) in this folder.
+Built-in npu_wrapper does not load raw Hub checkpoints.
+Next: export to an OpenVINO IR directory (see Intel / optimum-intel docs), then point registry at that folder; or use a supported .gguf file.
+README: Model Notes.
+"@
+    }
+    return ""
+}
+
+function Convert-FullPathToRepoRelativeModelArg {
+    param(
+        [string]$ProjectRoot,
+        [string]$FullPath
+    )
+    if ([string]::IsNullOrWhiteSpace($FullPath)) { return $FullPath }
+    $proj = [System.IO.Path]::GetFullPath($ProjectRoot)
+    $target = [System.IO.Path]::GetFullPath($FullPath)
+    if (-not $target.StartsWith($proj, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $FullPath
+    }
+    $rest = $target.Substring($proj.Length).TrimStart([char[]]@('\', '/'))
+    return "./" + ($rest -replace '\\', '/')
+}
+
+function Update-ModelsRegistrySelectedPath {
+    param(
+        [string]$ProjectRoot,
+        [string]$NewRelativePath,
+        [string]$Format = "openvino"
+    )
+    $rp = Join-Path $ProjectRoot "registry\models_registry.json"
+    if (-not (Test-Path -LiteralPath $rp)) { return }
+    $reg = Get-Content -LiteralPath $rp -Raw | ConvertFrom-Json
+    $sel = [string]$reg.selected_model
+    foreach ($m in @($reg.models)) {
+        if ([string]$m.id -eq $sel) {
+            $m.path = $NewRelativePath
+            $m.format = $Format
+        }
+    }
+    ($reg | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $rp -Encoding UTF8
 }
 
 function Get-OpenVinoRunnableCandidates {
@@ -119,7 +287,93 @@ function Get-OpenVinoRunnableCandidates {
     return ,$list.ToArray()
 }
 
+function Get-RegistrySelectedBackend {
+    param([string]$ProjectRoot)
+    $default = [pscustomobject]@{ Type = "builtin"; Formats = @("openvino", "gguf") }
+    $rp = Join-Path $ProjectRoot "registry\backends_registry.json"
+    if (-not (Test-Path -LiteralPath $rp)) { return $default }
+    try {
+        $reg = Get-Content -LiteralPath $rp -Raw | ConvertFrom-Json
+        $sel = [string]$reg.selected_backend
+        foreach ($b in @($reg.backends)) {
+            if ([string]$b.id -eq $sel) {
+                $t = if ($b.type) { [string]$b.type } else { "builtin" }
+                $formats = @("openvino", "gguf")
+                if ($b.PSObject.Properties.Name -contains "formats" -and $b.formats) {
+                    $formats = @($b.formats | ForEach-Object { [string]$_ })
+                } elseif ($t -eq "external") {
+                    $formats = @("hf", "safetensors", "gguf", "openvino")
+                }
+                return [pscustomobject]@{ Type = $t.Trim().ToLower(); Formats = $formats }
+            }
+        }
+    } catch {}
+    return $default
+}
+
+function Select-BestModelCandidate {
+    param(
+        [string]$ProjectRoot,
+        [pscustomobject]$RegistryBackend,
+        [string]$CurrentModelPath
+    )
+
+    $models = Get-RegistryModels -ProjectRoot $ProjectRoot
+    if (-not $models -or $models.Count -eq 0) { return $null }
+
+    $candidates = @()
+    foreach ($m in $models) {
+        $full = Resolve-FullModelDirectory -ModelPath $m.Path -ProjectRoot $ProjectRoot
+        if (-not $full -or -not (Test-Path -LiteralPath $full)) { continue }
+
+        if ($RegistryBackend.Type -eq "builtin") {
+            $bf = $null
+            $amb = $false
+            if (-not (Try-ResolveRunnableModelBackendFull -RelPath $m.Path -ProjectRoot $ProjectRoot -BackendFullOut ([ref]$bf) -AmbiguousGgufOut ([ref]$amb))) {
+                continue
+            }
+        }
+
+        $format = ([string]$m.Format).Trim().ToLower()
+        $sizeMb = Get-PathSizeMB -FullPath $full
+        $formatPriority = 5
+        if ($RegistryBackend.Type -eq "builtin") {
+            if ($format -eq "gguf") { $formatPriority = 0 }
+            elseif ($format -eq "openvino") { $formatPriority = 1 }
+        } else {
+            if ($format -eq "gguf") { $formatPriority = 0 }
+            elseif ($format -eq "openvino") { $formatPriority = 1 }
+            elseif ($format -eq "onnx") { $formatPriority = 2 }
+            elseif ($format -eq "safetensors" -or $format -eq "hf") { $formatPriority = 3 }
+        }
+
+        $score = ($formatPriority * 100000.0) + $sizeMb
+        $candidates += [pscustomobject]@{
+            Id = $m.Id
+            Path = $m.Path
+            Format = $format
+            SizeMb = $sizeMb
+            Score = $score
+        }
+    }
+
+    if (-not $candidates -or $candidates.Count -eq 0) { return $null }
+
+    $best = $candidates | Sort-Object Score, Id | Select-Object -First 1
+    if (-not $best) { return $null }
+    return $best
+}
+
 $registryPick = Get-RegistrySelectedModel
+$registryBackend = Get-RegistrySelectedBackend -ProjectRoot $scriptDir
+$registryAutoSelectBestModel = Get-RegistryAutoSelectBestModel -ProjectRoot $scriptDir
+
+if ($null -ne $registryAutoSelectBestModel) {
+    $autoSelectBestModel = [bool]$registryAutoSelectBestModel
+}
+if ($autoSelectModelEnv -eq "1") { $autoSelectBestModel = $true }
+if ($autoSelectModelEnv -eq "0") { $autoSelectBestModel = $false }
+if ($AutoSelectBestModel) { $autoSelectBestModel = $true }
 
 if ([string]::IsNullOrWhiteSpace($ModelPath)) {
     $ModelPath = $registryPick.Path
@@ -127,44 +381,131 @@ if ([string]::IsNullOrWhiteSpace($ModelPath)) {
 
 $ModelPath = Normalize-ModelPathString $ModelPath
 
-$modelDirFull = Resolve-FullModelDirectory -ModelPath $ModelPath -ProjectRoot $scriptDir
-$dirExists = $modelDirFull -and (Test-Path -LiteralPath $modelDirFull -PathType Container)
-$hasIr = $dirExists -and (Test-DirHasOpenVINOIr -FullPath $modelDirFull)
+if ($autoSelectBestModel) {
+    $best = Select-BestModelCandidate -ProjectRoot $scriptDir -RegistryBackend $registryBackend -CurrentModelPath $ModelPath
+    if ($best -and -not [string]::IsNullOrWhiteSpace($best.Path)) {
+        if ($best.Path -ne $ModelPath) {
+            Write-Host "[App] Auto-selected best model for this run: $($best.Id) ($($best.Path), format=$($best.Format), size=$($best.SizeMb) MB)." -ForegroundColor Cyan
+            Write-Host "      Heuristic favors lower-overhead formats and smaller model size for faster local compute." -ForegroundColor DarkGray
+        } else {
+            Write-Host "[App] Auto-select checked registry models; keeping current model: $($best.Id)." -ForegroundColor DarkGray
+        }
+        $ModelPath = $best.Path
+    } else {
+        Write-Host "[App] Auto-select enabled, but no runnable model candidates were found. Using selected model path." -ForegroundColor Yellow
+    }
+}
 
-if (-not $hasIr) {
+$modelResolvedFull = Resolve-FullModelDirectory -ModelPath $ModelPath -ProjectRoot $scriptDir
+$modelDirFull = $modelResolvedFull
+$dirExists = $modelDirFull -and (Test-Path -LiteralPath $modelDirFull -PathType Container)
+$targetExists = $modelResolvedFull -and (Test-Path -LiteralPath $modelResolvedFull)
+
+$backendFull = $null
+
+if ($registryBackend.Type -eq "external") {
+    if (-not $targetExists) {
+        throw "[App] Model path not found (external backend: path is passed to your entrypoint as-is).`n  $modelResolvedFull`n  (ModelPath was '$ModelPath')"
+    }
+    $backendFull = $modelResolvedFull
+    Write-Host "[App] External backend selected; skipping OpenVINO IR/GGUF layout checks." -ForegroundColor DarkGray
+} else {
+$ambiguousGguf = $false
+$hasRunnable = Try-ResolveRunnableModelBackendFull -RelPath $ModelPath -ProjectRoot $scriptDir `
+    -BackendFullOut ([ref]$backendFull) -AmbiguousGgufOut ([ref]$ambiguousGguf)
+
+if ($ambiguousGguf) {
+    throw @"
+[App] Model folder has multiple .gguf files and no OpenVINO IR (.xml).
+  Folder: $modelDirFull
+  Register path to one .gguf file, or keep only one .gguf in the folder, or add exported IR (.xml + weights).
+"@
+}
+
+if (-not $hasRunnable) {
     $fallback = $null
     foreach ($rel in (Get-OpenVinoRunnableCandidates -ProjectRoot $scriptDir -PreferPath $ModelPath)) {
-        $full = Resolve-FullModelDirectory -ModelPath $rel -ProjectRoot $scriptDir
-        if (Test-DirHasOpenVINOIr -FullPath $full) {
-            $fallback = @{ Relative = $rel; Full = $full }
+        $bf = $null
+        $amb = $false
+        if (Try-ResolveRunnableModelBackendFull -RelPath $rel -ProjectRoot $scriptDir -BackendFullOut ([ref]$bf) -AmbiguousGgufOut ([ref]$amb)) {
+            $fallback = @{ Relative = $rel; BackendFull = $bf }
             break
         }
     }
 
+    $firstRunHint = @"
+
+Why this happens on a fresh machine:
+  Built-in OpenVINO (npu_wrapper) only accepts an IR folder (*.xml + bins), a supported .gguf, or a folder with exactly one .gguf. Raw Hugging Face .safetensors trees are not loaded as-is. External backends skip this check.
+
+What to do next:
+  1) Get or export a runnable layout (IR or supported GGUF), run .\portable_setup.ps1 or edit registry\models_registry.json, or switch registry\backends_registry.json to type external if your stack loads HF weights directly.
+  2) Or copy registry\models_registry.example.json -> registry\models_registry.json, put your model under .\models\..., and edit path + selected_model.
+  3) Diagnostics: .\preflight_check.ps1 -ModelPath '<your path>'
+
+Docs: README sections 'What Loomis Does Not Bundle' and 'Model Notes'.
+"@
+
     if ($fallback) {
         if ($dirExists -and -not (Test-DirHasOpenVINOIr -FullPath $modelDirFull)) {
-            Write-Host "[App] Registry path has no OpenVINO IR (.xml): $ModelPath" -ForegroundColor Yellow
-            if ($registryPick.Format -match "^(?i)gguf$") {
-                Write-Host "      (GGUF folders are not valid for npu_wrapper; GenAI needs exported IR.)" -ForegroundColor DarkYellow
-            }
+            Write-Host "[App] Registry path is not a runnable OpenVINO model (no IR / single GGUF): $ModelPath" -ForegroundColor Yellow
         } elseif (-not $dirExists) {
-            Write-Host "[App] Model directory missing: $modelDirFull" -ForegroundColor Yellow
+            Write-Host "[App] Model path missing: $modelDirFull" -ForegroundColor Yellow
         }
-        Write-Host "[App] Starting with runnable OpenVINO model instead: $($fallback.Relative)" -ForegroundColor Cyan
-        Write-Host "      Update selected_model in registry\models_registry.json when you have an IR build." -ForegroundColor DarkGray
-        $ModelPath = $fallback.Relative
-        $modelDirFull = $fallback.Full
+        Write-Host "[App] Starting with another runnable model from registry instead: $($fallback.Relative)" -ForegroundColor Cyan
+        Write-Host "      Update selected_model in registry\models_registry.json to match the model you want." -ForegroundColor DarkGray
+        $backendFull = $fallback.BackendFull
     } else {
         if (-not $dirExists) {
-            throw "[App] Model directory not found:`n  $modelDirFull`n  (ModelPath was '$ModelPath')`n`nNo other registry path contained OpenVINO IR either. Add a model folder with a .xml (IR) under ./models/ or fix registry paths."
+            throw "[App] Model path not found:`n  $modelDirFull`n  (ModelPath was '$ModelPath')`n`nNo other registry path contained a runnable model (IR or single GGUF) either.$firstRunHint"
         }
-        $ggufNote = ""
-        if ($registryPick.Format -match "^(?i)gguf$") {
-            $ggufNote = "`n`nThe selected registry entry is GGUF-only. npu_wrapper needs OpenVINO IR (openvino_model.xml + weights), not .gguf files."
+        $exportedOk = $false
+        if ($autoExportIr -and $registryBackend.Type -eq "builtin" -and (Test-DirIsHfCheckpointWithoutIr -FullPath $modelDirFull)) {
+            try {
+                $modelDirName = [System.IO.Path]::GetFileName($modelDirFull.TrimEnd('\', '/'))
+                $modelDirParent = [System.IO.Path]::GetDirectoryName($modelDirFull)
+                if ([string]::IsNullOrWhiteSpace($modelDirName) -or [string]::IsNullOrWhiteSpace($modelDirParent)) {
+                    throw "Could not derive parent/name for model folder: $modelDirFull"
+                }
+                $irLeaf = "$modelDirName-ov-ir"
+                $irFull = Join-Path -Path $modelDirParent -ChildPath $irLeaf
+                $exportScript = Join-Path $scriptDir "Export-HfFolderToOpenVinoIR.ps1"
+                Write-Host "[App] Auto IR export: exporting Hugging Face checkpoint to IR (optimum-cli)..." -ForegroundColor Cyan
+                & $exportScript -ProjectRoot $scriptDir -HfModelDir $modelDirFull -IrOutputDir $irFull -TrustRemoteCode
+                if (Test-DirHasOpenVINOIr -FullPath $irFull) {
+                    $newRel = Convert-FullPathToRepoRelativeModelArg -ProjectRoot $scriptDir -FullPath $irFull
+                    Update-ModelsRegistrySelectedPath -ProjectRoot $scriptDir -NewRelativePath $newRel -Format "openvino"
+                    $backendFull = $irFull
+                    $exportedOk = $true
+                    Write-Host "[App] IR export done; registry updated to $newRel" -ForegroundColor Green
+                }
+            } catch {
+                Write-Host "[App] Auto IR export failed: $($_.Exception.Message)" -ForegroundColor Yellow
+            }
         }
-        throw "[App] No OpenVINO IR (.xml) found anywhere we tried (selected path + other registry entries + ./models/Qwen2.5-0.5B-Instruct).`n  Checked folder: $modelDirFull$ggufNote`n`nDownload or convert an OpenVINO IR model into ./models/... and register it. See README: 'Could not find a model in the directory'."
+        if (-not $exportedOk) {
+            $ggufNote = ""
+            if ($registryPick.Format -match "^(?i)gguf$") {
+                $ggufNote = "`n`nThis folder has no .gguf files (or several .gguf with no IR). Use one .gguf path, one-GGUF folder, or OpenVINO IR."
+            }
+            $folderHint = Get-UnrunnableModelFolderHint -FullPath $modelDirFull
+            $genericTail = if ([string]::IsNullOrWhiteSpace(($folderHint + "").Trim())) {
+                "`n`nAdd an IR folder (*.xml) or a supported .gguf path (recent GenAI for GGUF)."
+            } else {
+                ""
+            }
+            $autoHint = if (-not $autoExportIr) {
+                "`n`nTip: automatic HF -> IR export is disabled right now. Re-run with .\start_app.ps1 -AutoExportIr (or set env LOOMIS_AUTO_EXPORT_IR=1)."
+            } else {
+                ""
+            }
+            throw "[App] No runnable OpenVINO model found (selected path + other registry entries + ./models/Qwen2.5-0.5B-Instruct).`n  Checked: $modelDirFull$ggufNote$folderHint$genericTail$autoHint$firstRunHint"
+        }
     }
 }
+}
+
+$ModelPath = Convert-FullPathToRepoRelativeModelArg -ProjectRoot $scriptDir -FullPath $backendFull
 
 function Test-TcpPort {
     param(
@@ -284,6 +625,7 @@ function Wait-ForApiReady {
 
 Write-Host "[App] Project root: $scriptDir" -ForegroundColor Cyan
 Write-Host "[App] Starting backend API + App Shell (OpenWebUI disabled)..." -ForegroundColor Cyan
+Write-Host "[App] Selected backend type: $($registryBackend.Type)" -ForegroundColor DarkGray
 
 Write-Host "[App] Stopping stale backend/app shell processes..." -ForegroundColor Yellow
 Stop-BackendServer

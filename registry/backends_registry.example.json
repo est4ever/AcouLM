@@ -6,7 +6,7 @@
       "id": "openvino",
       "type": "builtin",
       "entrypoint": "dist/npu_wrapper.exe",
-      "formats": ["openvino"],
+      "formats": ["openvino", "gguf"],
       "status": "ready"
     }
   ]

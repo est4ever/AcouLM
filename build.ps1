@@ -99,7 +99,25 @@ New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 Get-Process -Name "npu_wrapper" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
 
-Copy-Item -Force $exeSrc (Join-Path $distDir "npu_wrapper.exe")
+$dstExe = Join-Path $distDir "npu_wrapper.exe"
+$copied = $false
+for ($attempt = 1; $attempt -le 6; $attempt++) {
+    try {
+        Copy-Item -Force $exeSrc $dstExe
+        $copied = $true
+        break
+    } catch {
+        if ($attempt -eq 1) {
+            Write-Warning "dist\\npu_wrapper.exe is in use; retrying copy (attempts: 6)..."
+        }
+        # Try again after ensuring no stale process remains and giving the OS a moment to release the handle.
+        Get-Process -Name "npu_wrapper" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds (400 * $attempt)
+    }
+}
+if (-not $copied) {
+    throw "Could not copy npu_wrapper.exe into dist\\ after multiple retries. Close running Loomis backend windows and retry."
+}
 if (Test-Path $ovinoBin) {
     Copy-Item -Recurse -Force (Join-Path $ovinoBin "*") $distDir
 } else {

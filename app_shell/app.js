@@ -52,6 +52,10 @@ if (window.__NPU_APP_SHELL_LOADED__) {
   };
 
   let activeView = "workspace";
+  let uiTheme = "light";
+  let apiBaseSaveTimer = null;
+  let stackRestartCountdown = null;
+  let systemFeedbackTimer = null;
   let selectedRegistryItem = null;
   let lastInferenceStats = {
     device: "-",
@@ -294,12 +298,30 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     }
   }
 
+  const PREFS_KEY = "loomis.ui.prefs.v1";
+  function loadPrefs() {
+    try {
+      return JSON.parse(localStorage.getItem(PREFS_KEY) || "{}");
+    } catch {
+      return {};
+    }
+  }
+  function savePrefs(partial) {
+    const next = { ...loadPrefs(), ...partial };
+    localStorage.setItem(PREFS_KEY, JSON.stringify(next));
+  }
+
+  function applyTheme(mode) {
+    document.body.dataset.theme = mode === "dark" ? "dark" : "light";
+  }
+
   async function requestJson(path, options = {}, allowFallback = true) {
     const currentBase = baseUrl();
     try {
+      const { headers: optHeaders, ...restFetch } = options;
       const response = await fetch(`${currentBase}${path}`, {
-        headers: { "Content-Type": "application/json" },
-        ...options,
+        ...restFetch,
+        headers: { "Content-Type": "application/json", ...(optHeaders || {}) },
       });
 
       const payload = await response.json().catch(() => ({}));
@@ -481,6 +503,7 @@ if (window.__NPU_APP_SHELL_LOADED__) {
 
     el("tabWorkspace")?.classList.toggle("active", nextView === "workspace");
     el("tabControl")?.classList.toggle("active", nextView === "control");
+    savePrefs({ activeView: nextView });
   }
 
   function setRuntimeStrip() {
@@ -617,6 +640,21 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     const optimizeMemoryOn = normalizeOnOff(status.optimize_memory);
     setChip("rContextRouting", `context-routing: ${contextRoutingOn ? "on" : "off"}`, contextRoutingOn ? "ready" : "ready");
     setChip("rOptimizeMemory", `optimize-memory: ${optimizeMemoryOn ? "on" : "off"}`, optimizeMemoryOn ? "ready" : "ready");
+
+    const proc = (memoryCache?.process && typeof memoryCache.process === "object") ? memoryCache.process : null;
+    const privateMb = Number(proc?.private_mb);
+    const workingSetMb = Number(proc?.working_set_mb);
+    if (Number.isFinite(privateMb) && privateMb > 0) {
+      const privateGb = (privateMb / 1024).toFixed(1);
+      const wsGb = Number.isFinite(workingSetMb) && workingSetMb > 0 ? (workingSetMb / 1024).toFixed(1) : null;
+      if (wsGb) {
+        setChip("rLoomisMemory", `loomis-mem: ${privateGb} GB (ws ${wsGb} GB)`, "ready");
+      } else {
+        setChip("rLoomisMemory", `loomis-mem: ${privateGb} GB`, "ready");
+      }
+    } else {
+      setChip("rLoomisMemory", "loomis-mem: -", "busy");
+    }
   }
 
   function renderStatusCards(status) {
@@ -1031,6 +1069,11 @@ if (window.__NPU_APP_SHELL_LOADED__) {
         checkbox.checked = normalizeOnOff(result[key]);
       }
 
+      const autoModelToggle = el("autoModelSelectToggle");
+      if (autoModelToggle) {
+        autoModelToggle.checked = Boolean(result.auto_select_best_model);
+      }
+
       if (typeof result.threshold === "number" && result.threshold > 0) {
         el("thresholdInput").value = result.threshold;
       }
@@ -1078,6 +1121,9 @@ if (window.__NPU_APP_SHELL_LOADED__) {
       const result = await requestJson("/cli/memory", { method: "GET" });
       memoryCache = result;
       renderMemoryGauge(result);
+      if (statusCache) {
+        renderReadinessBar(statusCache);
+      }
       if (!silent) {
         printJson(el("memoryOutput"), result);
       }
@@ -1461,6 +1507,31 @@ if (window.__NPU_APP_SHELL_LOADED__) {
       addActivity("Threshold update failed", "error");
     } finally {
       setButtonBusy("setThreshold", false);
+    }
+  }
+
+  async function saveAutoModelSelectSetting() {
+    const output = el("featuresOutput");
+    const toggle = el("autoModelSelectToggle");
+    if (!toggle) return;
+    const enabled = !!toggle.checked;
+
+    try {
+      setButtonBusy("saveAutoModelSelect", true, "Saving...");
+      const result = await requestJson("/cli/model/auto-select", {
+        method: "POST",
+        body: JSON.stringify({ enabled }),
+      });
+      printJson(output, result);
+      addActivity(`Auto model select ${enabled ? "enabled" : "disabled"} (applies on next launch)`, "ready");
+      setFeatureConfirmation(`Auto model select ${enabled ? "enabled" : "disabled"}. Restart via loomis/start_app to apply.`);
+      await refreshStatus();
+    } catch (err) {
+      output.textContent = String(err.message || err);
+      addActivity("Auto model select update failed", "error");
+      setFeatureConfirmation(`Auto model select update failed: ${String(err.message || err)}`, "error");
+    } finally {
+      setButtonBusy("saveAutoModelSelect", false);
     }
   }
 
@@ -1994,6 +2065,48 @@ if (window.__NPU_APP_SHELL_LOADED__) {
       keywords: "registry backend select",
       action: () => selectBackend(),
     },
+    {
+      id: "readiness",
+      label: "Refresh Readiness / Health",
+      keywords: "readiness health path model port",
+      action: () => refreshReadinessUI(),
+    },
+    {
+      id: "restart-stack",
+      label: "Restart Full Stack",
+      keywords: "restart backend app shell",
+      action: () => restartFullStack(),
+    },
+    {
+      id: "validate-model",
+      label: "Validate Selected Model (disk check)",
+      keywords: "validate model ir gguf",
+      action: () => validateSelectedModel(),
+    },
+    {
+      id: "device-recommend",
+      label: "Device Recommendation (from metrics)",
+      keywords: "tps recommendation device",
+      action: () => loadDeviceRecommend(),
+    },
+    {
+      id: "export-diag",
+      label: "Export Diagnostics Zip",
+      keywords: "support zip logs",
+      action: () => exportDiagnosticsZip(),
+    },
+    {
+      id: "run-benchmark",
+      label: "Run Benchmark Prompts",
+      keywords: "bench ttft tpot",
+      action: () => runBenchmarkSuite(),
+    },
+    {
+      id: "discover-models",
+      label: "Discover Unregistered models\\ Folders",
+      keywords: "discover import folder",
+      action: () => loadDiscoverList(),
+    },
   ];
 
   function openCommandPalette() {
@@ -2135,8 +2248,541 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     }
   }
 
+  function clearStackRestartCountdown() {
+    if (stackRestartCountdown) {
+      clearInterval(stackRestartCountdown);
+      stackRestartCountdown = null;
+    }
+  }
+
+  function setSystemFeedback(message, kind = "neutral") {
+    const node = el("systemFeedback");
+    if (!node) {
+      return;
+    }
+    if (systemFeedbackTimer) {
+      clearTimeout(systemFeedbackTimer);
+      systemFeedbackTimer = null;
+    }
+    const text = String(message || "").trim();
+    if (!text) {
+      node.textContent = "";
+      node.hidden = true;
+      node.removeAttribute("data-kind");
+      return;
+    }
+    node.textContent = text;
+    node.hidden = false;
+    node.dataset.kind = kind;
+    systemFeedbackTimer = setTimeout(() => {
+      node.textContent = "";
+      node.hidden = true;
+      node.removeAttribute("data-kind");
+      systemFeedbackTimer = null;
+    }, 14000);
+  }
+
+  function formatHttpProbe(v) {
+    if (v == null) {
+      return "—";
+    }
+    if (typeof v === "string") {
+      return v;
+    }
+    if (typeof v === "object" && typeof v.reachable === "boolean") {
+      if (!v.reachable) {
+        return v.status != null ? `Unreachable · HTTP ${v.status}` : "Unreachable";
+      }
+      return v.status != null ? `OK · HTTP ${v.status}` : "OK";
+    }
+    if (typeof v === "object" && v.ok != null) {
+      return v.ok ? "OK" : "Failed";
+    }
+    try {
+      return JSON.stringify(v);
+    } catch {
+      return String(v);
+    }
+  }
+
+  function formatModelAnalysisLines(ma) {
+    if (!ma || typeof ma !== "object") {
+      return [];
+    }
+    const lines = [];
+    if (ma.exists != null) {
+      lines.push(ma.exists ? "Path exists on disk" : "Path missing");
+    }
+    if (ma.kind) {
+      lines.push(`Type: ${ma.kind}`);
+    }
+    if (ma.openvino_ir != null) {
+      lines.push(ma.openvino_ir ? "OpenVINO IR present" : "No OpenVINO IR");
+    }
+    if (ma.gguf_count != null) {
+      const n = Number(ma.gguf_count);
+      lines.push(Number.isFinite(n) && n > 0 ? `${n} GGUF file(s)` : "No GGUF files");
+    }
+    if (ma.has_safetensors) {
+      lines.push("Safetensors present");
+    }
+    if (ma.runnable_hint) {
+      lines.push(`Runnable: ${ma.runnable_hint}`);
+    }
+    return lines;
+  }
+
+  async function refreshReadinessUI() {
+    const out = el("readinessOutput");
+    const sum = el("readinessSummary");
+    try {
+      const data = await requestJson("/cli/readiness", { method: "GET" });
+      printJson(out, data);
+      if (sum) {
+        sum.textContent = "";
+        const row = (label, value) => {
+          const wrap = document.createElement("div");
+          wrap.className = "readiness-summary-row";
+          const lb = document.createElement("span");
+          lb.className = "readiness-summary-label";
+          lb.textContent = label;
+          const val = document.createElement("span");
+          val.className = "readiness-summary-value";
+          val.textContent = value;
+          wrap.appendChild(lb);
+          wrap.appendChild(val);
+          sum.appendChild(wrap);
+        };
+        row("API port", data.api_port != null ? String(data.api_port) : "—");
+        row("/v1/health", formatHttpProbe(data.api_health));
+        row("App shell :5173", formatHttpProbe(data.app_shell_5173));
+        if (data.selected_model_id) {
+          row("Selected model", String(data.selected_model_id));
+        }
+        if (data.model_path) {
+          row("Model path", String(data.model_path));
+        }
+        const maLines = formatModelAnalysisLines(data.model_analysis);
+        if (maLines.length) {
+          const block = document.createElement("div");
+          block.className = "readiness-summary-block";
+          const bt = document.createElement("div");
+          bt.className = "readiness-summary-block-title";
+          bt.textContent = "Model on disk";
+          block.appendChild(bt);
+          for (const line of maLines) {
+            const ln = document.createElement("div");
+            ln.className = "readiness-summary-block-line";
+            ln.textContent = line;
+            block.appendChild(ln);
+          }
+          sum.appendChild(block);
+        }
+        if (data.last_error) {
+          const errPreview =
+            String(data.last_error).length > 220
+              ? `${String(data.last_error).slice(0, 220)}…`
+              : String(data.last_error);
+          row("Last error log", errPreview);
+        } else {
+          row("Last error log", "(none)");
+        }
+      }
+      setSystemFeedback("Readiness refreshed.", "ok");
+    } catch (err) {
+      const msg = String(err.message || err);
+      if (out) {
+        out.textContent = msg;
+      }
+      if (sum) {
+        sum.textContent = "";
+        const wrap = document.createElement("div");
+        wrap.className = "readiness-summary-row readiness-summary-error";
+        wrap.textContent = `Could not load readiness: ${msg}`;
+        sum.appendChild(wrap);
+      }
+      setSystemFeedback(`Readiness failed: ${msg}`, "error");
+    }
+  }
+
+  async function restartFullStack() {
+    clearStackRestartCountdown();
+    const c = el("restartCountdown");
+    try {
+      setButtonBusy("btnRestartStack", true, "Restarting…");
+      await requestJson("/cli/stack/restart", { method: "POST", body: "{}" });
+      addActivity("Full stack restart scheduled (backend + app shell)", "ready");
+      setSystemFeedback("Full stack restart scheduled. This window may disconnect in a few seconds.", "ok");
+      let n = 12;
+      if (c) {
+        c.textContent = `Reconnect: ${n}s`;
+      }
+      stackRestartCountdown = setInterval(() => {
+        n -= 1;
+        if (c) {
+          c.textContent = n > 0 ? `Reconnect: ${n}s` : "Reload the page or click Refresh status";
+        }
+        if (n <= 0) {
+          clearStackRestartCountdown();
+        }
+      }, 1000);
+    } catch (err) {
+      const m = String(err.message || err);
+      addActivity(`Stack restart request failed: ${m}`, "error");
+      setSystemFeedback(`Restart request failed: ${m}`, "error");
+    } finally {
+      setButtonBusy("btnRestartStack", false);
+    }
+  }
+
+  async function probeLocalBackendHealth() {
+    try {
+      setButtonBusy("btnStackProbe", true);
+      const d = await requestJson("/cli/backend/probe", { method: "GET" });
+      printJson(el("readinessOutput"), d);
+      addActivity("Local API probe complete", "ready");
+      const h = d && d.v1_health_check;
+      setSystemFeedback(
+        h && typeof h.reachable === "boolean"
+          ? h.reachable
+            ? "Probe: API /v1/health reachable."
+            : "Probe: API not reachable."
+          : "Probe finished — see Readiness JSON.",
+        "ok"
+      );
+    } catch (err) {
+      const m = String(err.message || err);
+      addActivity(`Probe failed: ${m}`, "error");
+      setSystemFeedback(`Probe failed: ${m}`, "error");
+    } finally {
+      setButtonBusy("btnStackProbe", false);
+    }
+  }
+
+  async function validateSelectedModel() {
+    const id = (el("modelSelect") && el("modelSelect").value) || "";
+    try {
+      setButtonBusy("btnModelValidate", true);
+      const data = await requestJson("/cli/model/validate", {
+        method: "POST",
+        body: JSON.stringify({ id }),
+      });
+      addActivity(`Validated: ${data.id || id}`, "ready");
+      printJson(el("readinessOutput"), data);
+      const hints = formatModelAnalysisLines(data.analysis);
+      setSystemFeedback(
+        hints.length
+          ? `Validate OK · ${data.id || id} — ${hints[0]}`
+          : `Validate OK · ${data.id || id}`,
+        "ok"
+      );
+    } catch (err) {
+      const m = String(err.message || err);
+      addActivity(`Validate failed: ${m}`, "error");
+      setSystemFeedback(`Validate failed: ${m}`, "error");
+    } finally {
+      setButtonBusy("btnModelValidate", false);
+    }
+  }
+
+  async function loadDeviceRecommend() {
+    try {
+      setButtonBusy("btnDeviceRecommend", true);
+      const d = await requestJson("/cli/metrics/recommendation", { method: "GET" });
+      printJson(el("readinessOutput"), d);
+      const best = d.suggested_device;
+      if (best) {
+        addActivity(
+          `By recent metrics, ${best} had best average TPS (${(d.avg_throughput || 0).toFixed(1)} tok/s). See JSON for detail.`,
+          "ready"
+        );
+        setSystemFeedback(
+          `Recommendation: try device ${best} (~${(d.avg_throughput || 0).toFixed(1)} tok/s avg). Details in Readiness JSON.`,
+          "ok"
+        );
+      } else {
+        addActivity("No TPS history yet for device recommendations.", "busy");
+        setSystemFeedback("No throughput history yet — run a few chats or benchmarks first.", "neutral");
+      }
+    } catch (err) {
+      const m = String(err.message || err);
+      addActivity(`Recommendation failed: ${m}`, "error");
+      setSystemFeedback(`Recommendation failed: ${m}`, "error");
+    } finally {
+      setButtonBusy("btnDeviceRecommend", false);
+    }
+  }
+
+  async function exportDiagnosticsZip() {
+    try {
+      setButtonBusy("btnExportDiag", true);
+      const d = await requestJson("/cli/diagnostics/export", { method: "POST", body: "{}" });
+      addActivity(
+        d.zip_path
+          ? `Diagnostics zip: ${d.zip_path}`
+          : "Export finished — see readiness JSON for path.",
+        "ready"
+      );
+      printJson(el("readinessOutput"), d);
+      if (d.zip_path) {
+        setSystemFeedback(`Diagnostics zip: ${d.zip_path}`, "ok");
+      } else {
+        setSystemFeedback("Export reported success — check Readiness JSON for path.", "ok");
+      }
+    } catch (err) {
+      const m = String(err.message || err);
+      addActivity(`Export failed: ${m}`, "error");
+      setSystemFeedback(`Export failed: ${m}`, "error");
+    } finally {
+      setButtonBusy("btnExportDiag", false);
+    }
+  }
+
+  const BENCH_PROMPTS = [
+    "Reply with the single word: bench-1",
+    "Reply with the single word: bench-2",
+    "In one short phrase, name a color.",
+  ];
+
+  function renderBenchmarkTable(rows) {
+    const wrap = el("benchmarkTableWrap");
+    if (!wrap) {
+      return;
+    }
+    wrap.textContent = "";
+    const table = document.createElement("table");
+    table.className = "bench-table";
+    const thead = document.createElement("thead");
+    const hr = document.createElement("tr");
+    for (const h of ["#", "Wall ms", "TTFT ms", "TPOT", "TPS", "Device", "Note"]) {
+      const th = document.createElement("th");
+      th.textContent = h;
+      hr.appendChild(th);
+    }
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    const tb = document.createElement("tbody");
+    for (const r of rows) {
+      const tr = document.createElement("tr");
+      for (const key of [
+        "i",
+        "wall",
+        "ttft",
+        "tpot",
+        "tps",
+        "device",
+        "note",
+      ]) {
+        const td = document.createElement("td");
+        td.textContent = r[key] != null ? String(r[key]) : "—";
+        tr.appendChild(td);
+      }
+      tb.appendChild(tr);
+    }
+    table.appendChild(tb);
+    wrap.appendChild(table);
+  }
+
+  async function runBenchmarkSuite() {
+    setButtonBusy("btnBenchmarkRun", true);
+    const rows = [];
+    try {
+      let modelId = "openvino";
+      if (statusCache && statusCache.selected_model) {
+        modelId = statusCache.selected_model;
+      } else {
+        try {
+          const s = await requestJson("/cli/status", { method: "GET" });
+          if (s && s.selected_model) {
+            modelId = s.selected_model;
+          }
+        } catch {
+          // use default
+        }
+      }
+      for (let i = 0; i < BENCH_PROMPTS.length; i += 1) {
+        const prompt = BENCH_PROMPTS[i];
+        const t0 = performance.now();
+        let note = "";
+        try {
+          await requestJson("/chat/completions", {
+            method: "POST",
+            headers: { "x-npu-cli": "true" },
+            body: JSON.stringify({
+              model: modelId,
+              messages: [{ role: "user", content: prompt }],
+              stream: false,
+              temperature: 0.2,
+              max_tokens: 64,
+            }),
+          });
+        } catch (err) {
+          note = String(err.message || err);
+          rows.push({
+            i: String(i + 1),
+            wall: (performance.now() - t0).toFixed(0),
+            ttft: "—",
+            tpot: "—",
+            tps: "—",
+            device: "—",
+            note,
+          });
+          continue;
+        }
+        const wall = (performance.now() - t0).toFixed(0);
+        let m = {};
+        try {
+          m = await requestJson("/cli/metrics?mode=last", { method: "GET" });
+        } catch {
+          m = {};
+        }
+        rows.push({
+          i: String(i + 1),
+          wall,
+          ttft: m.ttft_ms != null ? String(Number(m.ttft_ms).toFixed(1)) : "—",
+          tpot: m.tpot_ms != null ? String(Number(m.tpot_ms).toFixed(2)) : "—",
+          tps: m.throughput_tok_s != null ? String(Number(m.throughput_tok_s).toFixed(2)) : "—",
+          device: m.device != null && m.device !== "" ? String(m.device) : (statusCache?.active_device || "—"),
+          note: "ok",
+        });
+      }
+      renderBenchmarkTable(rows);
+      addActivity("Benchmark prompts finished (see table)", "ready");
+      const failed = rows.filter((r) => r.note && r.note !== "ok");
+      if (failed.length) {
+        setSystemFeedback(
+          `Benchmark finished with ${failed.length} failing prompt(s). Check the Note column.`,
+          "error"
+        );
+      } else {
+        setSystemFeedback("Benchmark finished — see the table below.", "ok");
+      }
+      try {
+        await fetchMetrics(true, "last");
+      } catch {
+        // ignore
+      }
+    } catch (err) {
+      setSystemFeedback(`Benchmark error: ${String(err.message || err)}`, "error");
+    } finally {
+      setButtonBusy("btnBenchmarkRun", false);
+    }
+  }
+
+  async function loadDiscoverList() {
+    const host = el("discoverModelsHost");
+    if (!host) {
+      return;
+    }
+    try {
+      const d = await requestJson("/cli/models/discover", { method: "GET" });
+      const un = d.unregistered || [];
+      host.textContent = "";
+      if (!un.length) {
+        host.textContent = "No unregistered subfolders under models\\.";
+        return;
+      }
+      for (const item of un) {
+        const row = document.createElement("div");
+        row.className = "discover-row";
+        const label = document.createElement("span");
+        label.className = "discover-name";
+        label.textContent = item.folder || item.path;
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = "Fill import";
+        b.addEventListener("click", () => {
+          if (el("modelImportId")) {
+            el("modelImportId").value = item.folder || "";
+          }
+          if (el("modelImportPath")) {
+            el("modelImportPath").value = item.path || `./models/${item.folder}`;
+          }
+          if (el("modelImportFormat")) {
+            const det = detectModelFormat(item.path || "") || "openvino";
+            el("modelImportFormat").value = det;
+          }
+          addActivity(`Import fields: ${item.folder}`, "ready");
+        });
+        row.appendChild(label);
+        row.appendChild(b);
+        host.appendChild(row);
+      }
+    } catch (err) {
+      host.textContent = String(err.message || err);
+    }
+  }
+
+  async function pasteImportFromClipboard() {
+    try {
+      const t = (await navigator.clipboard.readText()).trim();
+      if (!t) {
+        addActivity("Clipboard empty", "busy");
+        return;
+      }
+      const isPath =
+        t.includes("\\") ||
+        /^\./.test(t) ||
+        /^[a-zA-Z]:[\\/]/.test(t) ||
+        t.includes("/models/") ||
+        /\.(gguf|xml|onnx|bin|safetensors|json)(\s|$)/i.test(t);
+      if (isPath) {
+        if (el("modelImportPath")) {
+          el("modelImportPath").value = t;
+        }
+        if (el("modelImportFormat")) {
+          const det = detectModelFormat(t);
+          if (det) {
+            el("modelImportFormat").value = det;
+          }
+        }
+        const base = t.replace(/[/\\]+/g, "/").split("/").filter(Boolean).pop() || "model";
+        const idGuess = base.replace(/\.[^.]+$/, "");
+        if (el("modelImportId") && !el("modelImportId").value) {
+          el("modelImportId").value = idGuess;
+        }
+      } else if (t.includes("/")) {
+        if (el("terminalModelRepo")) {
+          el("terminalModelRepo").value = t;
+        }
+        const parts = t.split("/").filter(Boolean);
+        const last = (parts.pop() || "model").toLowerCase();
+        const localId = last.replace(/[^a-z0-9-]+/g, "-");
+        if (el("terminalModelId")) {
+          el("terminalModelId").value = localId;
+        }
+        if (el("modelImportId")) {
+          el("modelImportId").value = localId;
+        }
+        if (el("modelImportPath")) {
+          el("modelImportPath").value = `./models/${localId}`;
+        }
+        if (el("modelImportFormat")) {
+          el("modelImportFormat").value = "gguf";
+        }
+        buildTerminalCommand();
+      } else {
+        addActivity("Could not parse clipboard (use a path or org/model-id)", "busy");
+        return;
+      }
+      addActivity("Pasted into import (and terminal fields if repo)", "ready");
+    } catch (err) {
+      addActivity(`Clipboard read failed: ${String(err.message || err)}`, "error");
+    }
+  }
+
   function initializeApp() {
-    setPrimaryView("workspace");
+    const pf = loadPrefs();
+    if (typeof pf.apiBase === "string" && pf.apiBase.trim()) {
+      setApiBase(pf.apiBase.trim());
+    }
+    uiTheme = pf.theme === "dark" ? "dark" : "light";
+    applyTheme(uiTheme);
+    const themeSelect = el("themeSelect");
+    if (themeSelect) {
+      themeSelect.value = uiTheme === "dark" ? "dark" : "light";
+    }
+    setPrimaryView(pf.activeView === "control" ? "control" : "workspace");
 
     on("switchDevice", "click", switchDevice);
     on("wSwitchDevice", "click", () => {
@@ -2246,6 +2892,7 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     }
 
     on("thresholdInput", "input", validateThresholdInput);
+    on("saveAutoModelSelect", "click", saveAutoModelSelectSetting);
     on("buildTerminalCommand", "click", buildTerminalCommand);
     on("copyTerminalCommand", "click", copyTerminalCommand);
     on("terminalModelRepo", "input", buildTerminalCommand);
@@ -2255,13 +2902,77 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     for (const preset of document.querySelectorAll(".model-preset")) {
       preset.addEventListener("click", () => applyModelPreset(preset));
     }
+    for (const pack of document.querySelectorAll(".model-preset-pack")) {
+      pack.addEventListener("click", () => {
+        if (el("modelImportId")) {
+          el("modelImportId").value = pack.dataset.id || "";
+        }
+        if (el("modelImportPath")) {
+          el("modelImportPath").value = pack.dataset.path || "";
+        }
+        if (el("modelImportFormat")) {
+          el("modelImportFormat").value = pack.dataset.format || "openvino";
+        }
+        addActivity(`Preset: ${pack.dataset.id || "model"} (adjust paths as needed)`, "ready");
+      });
+    }
+
+    on("themeSelect", "change", () => {
+      const v = (el("themeSelect") && el("themeSelect").value) || "light";
+      uiTheme = v === "dark" ? "dark" : "light";
+      applyTheme(uiTheme);
+      savePrefs({ theme: uiTheme });
+    });
+    on("apiBase", "input", () => {
+      const node = el("apiBase");
+      if (!node) {
+        return;
+      }
+      clearTimeout(apiBaseSaveTimer);
+      apiBaseSaveTimer = setTimeout(() => {
+        savePrefs({ apiBase: node.value || defaultApiBase() });
+      }, 400);
+    });
+
+    on("refreshReadiness", "click", () => {
+      void refreshReadinessUI();
+    });
+    on("btnRestartStack", "click", () => {
+      void restartFullStack();
+    });
+    on("btnStackProbe", "click", () => {
+      void probeLocalBackendHealth();
+    });
+    on("btnModelValidate", "click", () => {
+      void validateSelectedModel();
+    });
+    on("btnDeviceRecommend", "click", () => {
+      void loadDeviceRecommend();
+    });
+    on("btnExportDiag", "click", () => {
+      void exportDiagnosticsZip();
+    });
+    on("btnBenchmarkRun", "click", () => {
+      void runBenchmarkSuite();
+    });
+    on("btnPasteImport", "click", () => {
+      void pasteImportFromClipboard();
+    });
 
     setRuntimeStrip();
     bindGlobalShortcuts();
     startConnectionPolling();
     startCliEvents();
     startPerformancePolling();
-    bootstrap();
+    bootstrap()
+      .then(() =>
+        Promise.all([loadDiscoverList(), refreshReadinessUI()]).catch(() => {
+          // Best-effort; main panels already show bootstrap errors.
+        })
+      )
+      .catch(() => {
+        // bootstrap() already reported errors
+      });
   }
 
   window.addEventListener("error", (event) => {

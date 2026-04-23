@@ -1,0 +1,36 @@
+name: CI validate
+
+# Gitleaks runs in `.github/workflows/secret-scan.yml`. This workflow adds
+# fast PowerShell parse checks (release checklist: scripts must be valid).
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  powershell-syntax:
+    name: PowerShell syntax
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Get-ChildItem -Path $PWD -Recurse -Include *.ps1 -File |
+            Where-Object { $_.FullName -notmatch '\\build\\|\\_deps\\' } |
+            ForEach-Object {
+              $tokens = $null
+              $errs = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errs)
+              if ($errs -and $errs.Count -gt 0) {
+                Write-Host "Parse errors in $($_.FullName):"
+                $errs | ForEach-Object { Write-Host $_ }
+                exit 1
+              }
+            }
+          Write-Host "All PowerShell files parsed OK."

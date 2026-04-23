@@ -92,6 +92,9 @@ private:
     // POST /v1/cli/model/rename - Change a registered model's id (path/format unchanged)
     void handle_cli_model_rename(const class httplib::Request& req, class httplib::Response& res);
 
+    // POST /v1/cli/model/auto-select - Persist auto model selection preference (applies on next start_app.ps1 run)
+    void handle_cli_model_auto_select(const class httplib::Request& req, class httplib::Response& res);
+
     // GET /v1/cli/backend/list - List registered backends and selected backend
     void handle_cli_backend_list(const class httplib::Request& req, class httplib::Response& res);
 
@@ -103,4 +106,25 @@ private:
 
     // POST /v1/cli/backend/restart - Kill this process and relaunch via run.ps1 (same argv as last server start)
     void handle_cli_backend_restart(const class httplib::Request& req, class httplib::Response& res);
+
+    // GET /v1/cli/readiness - model path, ports, last error
+    void handle_cli_readiness(const class httplib::Request& req, class httplib::Response& res);
+
+    // POST /v1/cli/model/validate - filesystem checks for a registry model
+    void handle_cli_model_validate(const class httplib::Request& req, class httplib::Response& res);
+
+    // GET /v1/cli/backend/probe - /v1/health of this process
+    void handle_cli_backend_probe(const class httplib::Request& req, class httplib::Response& res);
+
+    // POST /v1/cli/stack/restart - restart app shell + backend via restart_stack.ps1
+    void handle_cli_stack_restart(const class httplib::Request& req, class httplib::Response& res);
+
+    // GET /v1/cli/metrics/recommendation - best device from recent metrics
+    void handle_cli_metrics_recommendation(const class httplib::Request& req, class httplib::Response& res);
+
+    // GET /v1/cli/models/discover - folders under models/ not yet registered
+    void handle_cli_models_discover(const class httplib::Request& req, class httplib::Response& res);
+
+    // POST /v1/cli/diagnostics/export - run Export-Diagnostics.ps1, return zip path
+    void handle_cli_diagnostics_export(const class httplib::Request& req, class httplib::Response& res);
 };

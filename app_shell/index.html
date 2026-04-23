@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Loomis</title>
-  <link rel="stylesheet" href="./styles.css?v=20260406c" />
+  <link rel="stylesheet" href="./styles.css?v=20260624e" />
 </head>
 <body>
   <header class="app-header glass">
@@ -17,6 +17,13 @@
       <label class="base-url">
         API Base
         <input id="apiBase" type="text" value="http://localhost:8000/v1" />
+      </label>
+      <label class="theme-select-label">
+        Appearance
+        <select id="themeSelect" title="UI theme">
+          <option value="light">Light</option>
+          <option value="dark">Dark</option>
+        </select>
       </label>
       <button id="openCommandPalette" type="button" class="ghost">Ctrl+K</button>
       <div id="connBadge" class="conn-badge checking">API: checking</div>
@@ -33,6 +40,7 @@
     <span class="readiness-chip" id="rSplitPrefill">split-prefill: -</span>
     <span class="readiness-chip" id="rContextRouting">context-routing: -</span>
     <span class="readiness-chip" id="rOptimizeMemory">optimize-memory: -</span>
+    <span class="readiness-chip" id="rLoomisMemory">loomis-mem: -</span>
   </div>
   <nav class="workspace-tabs" aria-label="Primary Views">
     <button id="tabWorkspace" class="ghost active" type="button">Workspace</button>
@@ -52,10 +60,11 @@
         <span class="runtime-chip">TPOT: <strong id="chatLastTpot">-</strong></span>
       </div>
       <p class="hint" id="chatDeviceAvailability">Loaded devices: -</p>
+
       <div class="terminal-chat-hint">
-        <p>Chat runs in the terminal.</p>
-        <pre class="inline-cmd">.\npu_cli.ps1</pre>
-        <p class="hint">Metrics (device, TTFT, TPOT, latency, RAM) print after each response.</p>
+        <p>Chat runs in the terminal only.</p>
+        <pre class="inline-cmd">loomis</pre>
+        <p class="hint">Metrics (device, TTFT, TPOT, latency, RAM) print after each response in the terminal path.</p>
         <details class="mode-descriptions">
           <summary>Performance Mode Descriptions</summary>
           <div class="mode-details">
@@ -147,6 +156,39 @@
       </details>
     </section>
 
+    <section class="panel glass control-only" id="systemPanel">
+      <div class="panel-head">
+        <h2>System &amp; health</h2>
+        <button id="refreshReadiness" class="ghost" type="button">Refresh readiness</button>
+      </div>
+      <p class="hint">Model validation does not load weights into GPU — it only checks files on disk.</p>
+      <div class="system-actions">
+        <div class="system-row system-row-primary">
+          <button id="btnRestartStack" type="button">Restart full stack</button>
+          <span id="restartCountdown" class="system-countdown" aria-live="polite"></span>
+        </div>
+        <div class="system-row system-row-grid">
+          <button id="btnStackProbe" class="ghost" type="button">Probe API /health</button>
+          <button id="btnModelValidate" class="ghost" type="button">Validate selected model</button>
+          <button id="btnDeviceRecommend" class="ghost" type="button">Device recommendation</button>
+          <button id="btnExportDiag" class="ghost" type="button">Export diagnostics (zip)</button>
+        </div>
+      </div>
+      <p id="systemFeedback" class="system-feedback" role="status" aria-live="polite" hidden></p>
+      <div id="readinessSummary" class="readiness-summary"></div>
+      <details class="raw-toggle">
+        <summary>Readiness JSON</summary>
+        <pre id="readinessOutput" class="output compact-output"></pre>
+      </details>
+      <h3 class="subpanel-title">Benchmark (fixed prompts)</h3>
+      <div class="row">
+        <button id="btnBenchmarkRun" type="button" class="ghost">Run 3 test prompts</button>
+      </div>
+      <div id="benchmarkTableWrap" class="bench-wrap"></div>
+      <h3 class="subpanel-title">Unregistered <code>models\</code> folders</h3>
+      <div id="discoverModelsHost" class="discover-box"></div>
+    </section>
+
     <section class="panel glass control-only" id="statusPanel">
       <div class="panel-head">
         <h2>Status Cards</h2>
@@ -184,6 +226,14 @@
         <p><strong>context-routing</strong>: route requests intelligently to the best device by context.</p>
         <p><strong>optimize-memory</strong>: reduce memory use via INT8 cache optimization.</p>
       </div>
+      <div class="row">
+        <label title="When enabled, Loomis auto-picks the best registry model on next launcher start.">
+          <input id="autoModelSelectToggle" type="checkbox" />
+          auto model select at launch
+        </label>
+        <button id="saveAutoModelSelect" class="ghost" type="button">Save</button>
+      </div>
+      <p class="hint">This setting applies the next time the stack is started by <strong>loomis</strong> / <strong>start_app.ps1</strong>.</p>
 
       <div class="row">
         <label>Threshold <input id="thresholdInput" type="number" min="1" step="1" value="80" /></label>
@@ -250,6 +300,15 @@
           <button id="selectModel">Select Model</button>
         </div>
         <p class="hint"><strong>Import a Model:</strong> Registry rows are just paths on disk. If your <strong>selected backend</strong> is the built-in <strong>npu_wrapper</strong> (OpenVINO GenAI), the <strong>selected</strong> model folder must contain OpenVINO IR (a <code>.xml</code> plus weights) for chat to run. If you use an <strong>external</strong> backend, follow <em>that</em> engine’s format requirements instead. You can still register <code>gguf</code> or other files as documentation of HF downloads. To change only the registry ID, use <strong>Rename ID</strong> on the detail card.</p>
+        <div class="row">
+          <button id="btnPasteImport" type="button" class="ghost" title="Paste repo id or path from clipboard">Paste into import</button>
+        </div>
+        <p class="hint">Preset packs (ids only — adjust paths if your folders differ):</p>
+        <div class="row preset-row">
+          <button type="button" class="ghost model-preset-pack" data-id="small-local" data-path="./models/small" data-format="openvino">small</button>
+          <button type="button" class="ghost model-preset-pack" data-id="medium-local" data-path="./models/medium" data-format="openvino">medium</button>
+          <button type="button" class="ghost model-preset-pack" data-id="large-local" data-path="./models/large" data-format="openvino">large</button>
+        </div>
         <div class="row">
           <input id="modelImportId" type="text" placeholder="e.g., gemma-4-e4b-it-gguf" />
           <input id="modelImportPath" type="text" placeholder="e.g., ./models/gemma-4-e4b-it-gguf/model-4b-q4.gguf" />
@@ -349,6 +408,6 @@
     </div>
   </dialog>
 
-  <script src="./app.js?v=20260406c"></script>
+  <script src="./app.js?v=20260624a"></script>
 </body>
 </html>

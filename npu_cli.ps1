@@ -257,8 +257,15 @@ function Invoke-Api {
 }
 
 if (-not [string]::IsNullOrWhiteSpace($Command)) {
+    if ($Command.Trim().ToLower() -eq "chat") {
+        if ($Arguments.Count -ge 1 -and [string]::IsNullOrWhiteSpace($Prompt)) {
+            $Prompt = ($Arguments -join " ").Trim()
+        }
+        $Command = ""
+    } else {
     $exitCode = Process-Command -Command $Command -Arguments $Arguments
     exit $exitCode
+    }
 }
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,16 @@
+#!/usr/bin/env sh
+set -eu
+
+if command -v gitleaks >/dev/null 2>&1; then
+  GITLEAKS_BIN="gitleaks"
+elif [ -x "/c/Users/GodBlessed/AppData/Local/Microsoft/WinGet/Links/gitleaks.exe" ]; then
+  GITLEAKS_BIN="/c/Users/GodBlessed/AppData/Local/Microsoft/WinGet/Links/gitleaks.exe"
+else
+  echo "[pre-commit] gitleaks is not installed."
+  echo "[pre-commit] Install gitleaks, then run: ./Install-PreCommitHook.ps1"
+  echo "[pre-commit] Blocking commit to avoid accidental secret leakage."
+  exit 1
+fi
+
+echo "[pre-commit] Running gitleaks scan..."
+"$GITLEAKS_BIN" detect --verbose --redact --source .

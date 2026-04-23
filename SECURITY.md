@@ -20,6 +20,22 @@ That file is auto-generated and listed in `.gitignore`. If it was **ever committ
 
 `registry/models_registry.json` and `registry/backends_registry.json` are machine-specific (paths, backend IDs). They are not tracked; use `registry/*.example.json` as templates or run `.\portable_setup.ps1` to create defaults.
 
+## Automated secret scanning
+
+- CI runs gitleaks on push/PR via `.github/workflows/secret-scan.yml`.
+- Local commits can be blocked with the repo pre-commit hook:
+
+  ```powershell
+  winget install gitleaks.gitleaks
+  .\Install-PreCommitHook.ps1
+  ```
+
+- Manual local scan:
+
+  ```powershell
+  .\Scan-Secrets.ps1
+  ```
+
 ## Reporting
 
 Open a private security advisory on GitHub or contact the maintainers if you find a vulnerability.

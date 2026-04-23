@@ -48,6 +48,7 @@ metrics.ndjson
 # Registry JSON is machine-specific (paths, selections). Commit only *.example.json templates.
 registry/*.json
 !registry/*.example.json
+*.bak
 
 # OpenWebUI runtime secret (auto-generated, do not commit)
 .webui_secret_key
@@ -61,3 +62,13 @@ gpu_cache/
 # CMake
 CMakeCache.txt
 CMakeFiles/
+
+# Secret scanning local artifacts
+gitleaks-report*.json
+gitleaks-report*.sarif
+*.gitleaks.json
+*.gitleaks.sarif
+
+# Local export / SBOM output (user-generated)
+export/
+sbom/

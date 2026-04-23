@@ -89,6 +89,7 @@ Success response fields:
 - `tpot_ms`
 - `throughput`
 - `selected_model`
+- `auto_select_best_model`
 - `selected_backend`
 - optional: `prefill_device`, `decode_device`, `threshold`
 
@@ -329,6 +330,31 @@ Error codes:
 - `invalid_json` (400)
 - `model_select_failed` (500)
 
+### `POST /v1/cli/model/auto-select`
+
+Request:
+
+```json
+{
+  "enabled": true
+}
+```
+
+Success:
+
+```json
+{
+  "success": true,
+  "auto_select_best_model": true,
+  "note": "Saved. Applies on next .\\start_app.ps1 launch."
+}
+```
+
+Error codes:
+- `missing_required_fields` (400)
+- `invalid_json` (400)
+- `model_auto_select_update_failed` (500)
+
 ## 9) Backend Registry
 
 ### `GET /v1/cli/backend/list`
@@ -344,12 +370,14 @@ Success:
       "id": "openvino",
       "type": "builtin",
       "entrypoint": "dist/npu_wrapper.exe",
-      "formats": ["openvino"],
+      "formats": ["openvino", "gguf"],
       "status": "ready"
     }
   ]
 }
 ```
+
+`formats` is informational for integrators. **`start_app.ps1` enforces OpenVINO IR/GGUF paths only when `type` is `builtin`**. For `external`, only path existence is checked before launching your entrypoint.
 
 Error codes:
 - `backend_list_failed` (500)
@@ -363,7 +391,7 @@ Request:
   "id": "onnxruntime",
   "type": "external",
   "entrypoint": "C:/tools/onnxruntime_runner.exe",
-  "formats": ["openvino"]
+  "formats": ["onnx", "hf"]
 }
 ```
 
@@ -411,3 +439,43 @@ Error codes:
 - `backend_not_found` (404)
 - `invalid_json` (400)
 - `backend_select_failed` (500)
+
+## 10) Readiness, validation, stack, metrics, discovery, diagnostics
+
+### `GET /v1/cli/readiness`
+
+Returns port, best-effort HTTP checks for the API and app shell (`5173`), selected model path analysis, and a tail of the last error log (if any).
+
+### `POST /v1/cli/model/validate`
+
+JSON body (optional):
+
+```json
+{ "id": "my-model-id" }
+```
+
+If `id` is omitted or empty, the currently selected registry model is used. Responds with filesystem / format analysis for that model path (no full weight load).
+
+### `GET /v1/cli/backend/probe`
+
+Checks local API health (`/v1/health`) from the running process. Use for a quick compatibility smoke.
+
+### `POST /v1/cli/stack/restart`
+
+Schedules `restart_stack.ps1` (full stack: backend + app shell). The current process may exit shortly after the response.
+
+### `GET /v1/cli/metrics/recommendation`
+
+Suggests a device from historical `throughput_tok_s` metrics (best average TPS).
+
+### `GET /v1/cli/models/discover`
+
+Lists subfolders under `models\` that are not already covered by registry entries (heuristic for “unregistered” trees).
+
+### `POST /v1/cli/diagnostics/export`
+
+Runs `Export-Diagnostics.ps1` and returns `{ "zip_path": "..." }` when `export/last-export.txt` is written.
+
+### CORS (app shell)
+
+If a browser client sends `x-npu-cli: true` (for example automated benchmark calls), the server must list that header in `Access-Control-Allow-Headers`. Chat in this project is intended for the terminal (`loomis` / `npu_cli.ps1`).
