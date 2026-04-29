@@ -25,6 +25,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
+          # Intentionally no npm cache config to avoid lockfile-path errors.
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
