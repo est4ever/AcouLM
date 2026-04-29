@@ -1,11 +1,9 @@
 export const navItems = [
   { label: "Quick Start", href: "#quick-start" },
   { label: "Architecture", href: "#architecture" },
-  { label: "Models", href: "#models" },
   { label: "API", href: "#api" },
   { label: "CLI", href: "#cli" },
-  { label: "FAQ", href: "#faq" },
-  { label: "GitHub", href: "https://github.com/est4ever/AcouLM", external: true },
+  { label: "GitHub", href: "https://github.com/est4ever/AcouLM", external: true, cta: true },
 ];
 
 export const quickStartCommands = [
@@ -23,12 +21,9 @@ export const quickStartCommands = [
 export const apiEndpoints = [
   "GET /v1/health",
   "POST /v1/chat/completions",
-  "GET /v1/cli/status",
   "POST /v1/cli/device/switch",
   "POST /v1/cli/policy",
   "GET /v1/cli/metrics",
-  "GET /v1/cli/model/list",
-  "GET /v1/cli/backend/list",
 ];
 
 export const cliCommands = [
@@ -41,15 +36,38 @@ export const cliCommands = [
 ];
 
 export const features = [
-  "Browser control plane",
-  "Terminal CLI",
-  "OpenAI-style chat endpoint",
-  "Pluggable backend registry",
-  "Model registry",
-  "CPU/GPU/NPU device control",
-  "OpenVINO IR and supported GGUF workflows",
-  "Metrics and diagnostics",
-  "Local-first Windows deployment",
+  {
+    title: "Browser Control Plane",
+    description: "Local dashboard for runtime status, policies, and model/backend orchestration.",
+  },
+  {
+    title: "Terminal CLI",
+    description: "Scriptable PowerShell interface for fast operations and low-friction control.",
+  },
+  {
+    title: "OpenAI-compatible API",
+    description: "Chat and runtime endpoints at localhost:8000/v1 with clear separation of concerns.",
+  },
+  {
+    title: "Pluggable Backends",
+    description: "Use built-in npu_wrapper or attach external backends through the same API contract.",
+  },
+  {
+    title: "Model Registry",
+    description: "Register and switch local model paths without modifying core runtime scripts.",
+  },
+  {
+    title: "CPU / GPU / NPU Switching",
+    description: "Route inference across available devices based on operational goals.",
+  },
+  {
+    title: "OpenVINO + GGUF support",
+    description: "Built-in runtime supports OpenVINO IR and supported GGUF via OpenVINO GenAI.",
+  },
+  {
+    title: "Metrics & Diagnostics",
+    description: "Track runtime health and latency signals for practical troubleshooting.",
+  },
 ];
 
 export const faqs = [

@@ -11,9 +11,10 @@ export function FeatureGrid() {
         {features.map((feature, i) => {
           const Icon = icons[i] ?? Cpu;
           return (
-            <article key={feature} className="rounded-xl border border-line bg-panel p-4">
+            <article key={feature.title} className="rounded-xl border border-line bg-panel p-5 transition hover:shadow-glow">
               <Icon className="mb-3 text-accent" size={18} />
-              <h3 className="text-sm font-semibold text-slate-100">{feature}</h3>
+              <h3 className="text-sm font-semibold text-slate-100">{feature.title}</h3>
+              <p className="mt-2 text-sm text-slate-400">{feature.description}</p>
             </article>
           );
         })}

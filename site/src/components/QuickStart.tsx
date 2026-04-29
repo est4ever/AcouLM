@@ -7,14 +7,14 @@ function CommandCard({ title, command }: { title: string; command: string }) {
   };
 
   return (
-    <article className="rounded-xl border border-line bg-panel p-4">
+    <article className="rounded-xl border border-line bg-panel p-4 transition hover:shadow-glow">
       <div className="mb-3 flex items-center justify-between">
         <h3 className="font-semibold">{title}</h3>
         <button onClick={copy} className="inline-flex items-center gap-2 rounded border border-line px-2 py-1 text-xs text-slate-300 hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" aria-label={`Copy ${title} command`}>
           <Copy size={14} /> Copy
         </button>
       </div>
-      <pre className="overflow-x-auto rounded bg-black/40 p-3 font-mono text-xs text-accent">{command}</pre>
+      <pre className="overflow-x-auto rounded border border-line/60 bg-black/50 p-3 font-mono text-xs text-accent">{command}</pre>
     </article>
   );
 }

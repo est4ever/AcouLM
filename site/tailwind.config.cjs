@@ -3,13 +3,13 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        page: "#05070d",
-        panel: "#0a1120",
-        line: "#1a2a44",
-        accent: "#20d7ff"
+        page: "#0a0a0a",
+        panel: "#111318",
+        line: "#2a2f3a",
+        accent: "#00d4ff"
       },
       boxShadow: {
-        glow: "0 0 0 1px rgba(32,215,255,0.3), 0 0 28px rgba(32,215,255,0.12)"
+        glow: "0 0 0 1px rgba(0,212,255,0.35), 0 0 24px rgba(0,212,255,0.16), 0 0 42px rgba(139,92,246,0.12)"
       }
     }
   },

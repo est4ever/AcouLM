@@ -2,10 +2,13 @@ export function ModelsSection() {
   return (
     <section id="models" className="section-wrap">
       <h2 className="section-title">Models</h2>
-      <div className="mt-6 space-y-3 text-slate-300">
-        <p>AcouLM does not bundle model weights. You register model IDs and local paths in `registry/models_registry.json`.</p>
-        <p>The built-in backend expects OpenVINO IR and supported GGUF through OpenVINO GenAI.</p>
-        <p>External backend users can bring their own runtime and model format strategy while keeping the same AcouLM API surface.</p>
+      <div className="mt-6 rounded-xl border border-line bg-panel p-5 text-slate-300">
+        <ul className="space-y-3">
+          <li>Models are <span className="font-semibold text-white">not included</span> in the repository.</li>
+          <li>Users register local model paths in <code className="font-mono text-accent">registry/models_registry.json</code>.</li>
+          <li>Built-in backend supports OpenVINO IR and supported GGUF via OpenVINO GenAI.</li>
+          <li>External backends are supported through the same API contract.</li>
+        </ul>
       </div>
     </section>
   );
