@@ -566,7 +566,16 @@ if (window.__NPU_APP_SHELL_LOADED__) {
 
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(payload?.error?.message || `HTTP ${response.status}`);
+        const baseMsg = payload?.error?.message || `HTTP ${response.status}`;
+        const det = payload?.error?.details;
+        let extra = "";
+        if (det && typeof det === "object") {
+          if (det.exception) extra = ` — ${det.exception}`;
+          else if (det.message) extra = ` — ${det.message}`;
+        } else if (typeof det === "string" && det.trim()) {
+          extra = ` — ${det.trim()}`;
+        }
+        throw new Error(`${baseMsg}${extra}`);
       }
 
       setConnectionState("online");
@@ -824,32 +833,20 @@ if (window.__NPU_APP_SHELL_LOADED__) {
   }
 
   function syncChatModelOptions(selectedHint = "") {
-    const modelSelect = el("chatModel");
-    if (!modelSelect) return;
+    const modelField = el("chatModel");
+    if (!modelField) return;
 
-    const preferred = selectedHint || statusCache?.selected_model || modelSelect.value || "local";
-    const items = modelRegistryCache.length
-      ? modelRegistryCache.map((m) => m.id)
-      : [preferred || "local"];
+    const ids = modelRegistryCache.map((m) => m.id).filter(Boolean);
+    const deduped = [...new Set(ids)];
+    let preferred = String(selectedHint || statusCache?.selected_model || modelField.value || "").trim();
 
-    const deduped = [...new Set(items.filter(Boolean))];
-    modelSelect.innerHTML = "";
-
-    for (const id of deduped) {
-      const option = document.createElement("option");
-      option.value = id;
-      option.textContent = id;
-      modelSelect.appendChild(option);
+    if (!preferred || preferred === "local" || preferred === "openvino") {
+      preferred = deduped[0] || "openvino-local";
     }
-
-    if (!deduped.includes(preferred)) {
-      const fallback = document.createElement("option");
-      fallback.value = preferred;
-      fallback.textContent = preferred;
-      modelSelect.appendChild(fallback);
+    if (deduped.length && !deduped.includes(preferred)) {
+      preferred = deduped[0];
     }
-
-    modelSelect.value = preferred;
+    modelField.value = preferred;
   }
 
   function badgeStateFromStatus(value, fallback = "ready") {
@@ -2100,20 +2097,27 @@ if (window.__NPU_APP_SHELL_LOADED__) {
   }
 
   async function getChatModelId() {
-    let modelId = "openvino";
-    if (statusCache?.selected_model) {
-      modelId = statusCache.selected_model;
-    } else {
-      try {
-        const s = await requestJson("/cli/status", { method: "GET" });
-        if (s && s.selected_model) {
-          modelId = s.selected_model;
-        }
-      } catch {
-        // keep default
-      }
+    syncChatModelOptions("");
+    const cm = el("chatModel");
+    const fromField = cm && String(cm.value || "").trim();
+    if (fromField) {
+      return fromField;
     }
-    return modelId;
+    if (statusCache?.selected_model) {
+      return statusCache.selected_model;
+    }
+    try {
+      const s = await requestJson("/cli/status", { method: "GET" });
+      if (s && s.selected_model) {
+        return s.selected_model;
+      }
+    } catch {
+      // ignore
+    }
+    if (modelRegistryCache.length > 0 && modelRegistryCache[0].id) {
+      return modelRegistryCache[0].id;
+    }
+    return "openvino-local";
   }
 
   async function sendBrowserChat() {
@@ -3429,17 +3433,7 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     if (noteEl) noteEl.textContent = "Running feature compare…";
     try {
       const { warmupRuns, timedRuns, maxTokens } = readBenchToggleParams();
-      let modelId = "openvino";
-      if (statusCache && statusCache.selected_model) {
-        modelId = statusCache.selected_model;
-      } else {
-        try {
-          const s = await requestJson("/cli/status", { method: "GET" });
-          if (s && s.selected_model) modelId = s.selected_model;
-        } catch {
-          // keep default
-        }
-      }
+      const modelId = await getChatModelId();
 
       const allNotes = [];
 
@@ -3622,19 +3616,7 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     setButtonBusy("btnBenchmarkRun", true);
     const rows = [];
     try {
-      let modelId = "openvino";
-      if (statusCache && statusCache.selected_model) {
-        modelId = statusCache.selected_model;
-      } else {
-        try {
-          const s = await requestJson("/cli/status", { method: "GET" });
-          if (s && s.selected_model) {
-            modelId = s.selected_model;
-          }
-        } catch {
-          // use default
-        }
-      }
+      const modelId = await getChatModelId();
       for (let i = 0; i < BENCH_PROMPTS.length; i += 1) {
         const prompt = BENCH_PROMPTS[i];
         const t0 = performance.now();
