@@ -290,7 +290,7 @@ function Get-DoubleArrayFromRows($rows, [string]$prop) {
         $v = $r.$prop
         if ($null -ne $v) { $vals.Add([double]$v) }
     }
-    return ,$vals.ToArray()
+    return $vals.ToArray()
 }
 
 function Get-Median([double[]]$a) {
@@ -411,7 +411,7 @@ function Get-PairedWallDiffs($enabledRows, $baselineRows) {
         if ($null -eq $we -or $null -eq $wb) { continue }
         $d.Add([double]$we - [double]$wb)
     }
-    return ,$d.ToArray()
+    return $d.ToArray()
 }
 
 function Get-PairedTAndDz([double[]]$diffs) {
