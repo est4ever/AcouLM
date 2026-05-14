@@ -3043,14 +3043,15 @@ if (window.__NPU_APP_SHELL_LOADED__) {
 
     const h1 = document.createElement("h4");
     h1.className = "subpanel-title";
-    h1.textContent = "Summary (averages)";
+    h1.textContent = "Summary (successful completions only)";
     wrap.appendChild(h1);
     wrap.appendChild(
       mkTable(
-        ["Scenario", "Runs", "Avg wall ms", "Avg TTFT", "Avg TPOT", "Avg TPS"],
+        ["Scenario", "Timed runs", "OK", "Avg wall ms", "Avg TTFT", "Avg TPOT", "Avg TPS"],
         summaryRows.map((s) => [
           s.scenario,
-          String(s.runs),
+          String(s.runsTotal != null ? s.runsTotal : s.runs),
+          s.runsOk != null ? `${s.runsOk}/${s.runsTotal != null ? s.runsTotal : s.runs}` : String(s.runs),
           s.avgWall != null ? s.avgWall.toFixed(1) : "—",
           s.avgTtft != null ? s.avgTtft.toFixed(1) : "—",
           s.avgTpot != null ? s.avgTpot.toFixed(2) : "—",
@@ -3059,7 +3060,23 @@ if (window.__NPU_APP_SHELL_LOADED__) {
       )
     );
 
-    if (analysis && analysis.perMetric && analysis.perMetric.length) {
+    if (analysis && analysis.validityHint) {
+      const warn = document.createElement("p");
+      warn.className = "readiness-summary-row readiness-summary-error";
+      warn.style.marginTop = "10px";
+      warn.textContent = analysis.validityHint;
+      wrap.appendChild(warn);
+    }
+
+    if (analysis && analysis.infoNote) {
+      const inf = document.createElement("p");
+      inf.className = "hint";
+      inf.style.marginTop = "8px";
+      inf.textContent = analysis.infoNote;
+      wrap.appendChild(inf);
+    }
+
+    if (analysis && analysis.validForInference && analysis.perMetric && analysis.perMetric.length) {
       const hStat = document.createElement("h4");
       hStat.className = "subpanel-title";
       hStat.style.marginTop = "12px";
@@ -3147,7 +3164,7 @@ if (window.__NPU_APP_SHELL_LOADED__) {
       });
     } catch (err) {
       return {
-        wallMs: performance.now() - t0,
+        wallMs: null,
         ttft: null,
         tpot: null,
         tps: null,
@@ -3295,17 +3312,38 @@ if (window.__NPU_APP_SHELL_LOADED__) {
   }
 
   function computeToggleBenchAnalysis(enabledRows, baselineRows, pairedInterleaved) {
-    const pick = (rows, key) => rows.map((r) => r[key]).filter((v) => Number.isFinite(v));
-    const we = pick(enabledRows, "wallMs");
-    const wb = pick(baselineRows, "wallMs");
-    const te = pick(enabledRows, "ttft");
-    const tb = pick(baselineRows, "ttft");
-    const pe = pick(enabledRows, "tpot");
-    const pb = pick(baselineRows, "tpot");
-    const se = pick(enabledRows, "tps");
-    const sb = pick(baselineRows, "tps");
-
+    const okE = enabledRows.filter((r) => r.note === "ok");
+    const okB = baselineRows.filter((r) => r.note === "ok");
     const B = 600;
+
+    const failParts = [];
+    if (okE.length < enabledRows.length || okB.length < baselineRows.length) {
+      failParts.push(
+        `Some timed runs did not complete chat (enabled ${okE.length}/${enabledRows.length} OK, baseline ${okB.length}/${baselineRows.length} OK).`
+      );
+    }
+    if (okE.length < 2 || okB.length < 2) {
+      failParts.push("A/B statistics need at least two successful completions per scenario (real inference), not error round-trips.");
+      return {
+        perMetric: [],
+        pairedWall: null,
+        bootstrapSamples: B,
+        pairedInterleaved,
+        validForInference: false,
+        validityHint: failParts.join(" "),
+      };
+    }
+
+    const pick = (rows, key) => rows.map((r) => r[key]).filter((v) => Number.isFinite(v));
+    const we = pick(okE, "wallMs");
+    const wb = pick(okB, "wallMs");
+    const te = pick(okE, "ttft");
+    const tb = pick(okB, "ttft");
+    const pe = pick(okE, "tpot");
+    const pb = pick(okB, "tpot");
+    const se = pick(okE, "tps");
+    const sb = pick(okB, "tps");
+
     const rows = [];
     const metrics = [
       { label: "wall_ms", e: we, b: wb, sense: "lower_better" },
@@ -3340,9 +3378,11 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     if (pairedInterleaved && enabledRows.length === baselineRows.length) {
       const diffs = [];
       for (let i = 0; i < enabledRows.length; i += 1) {
-        const weW = enabledRows[i].wallMs;
-        const wbW = baselineRows[i].wallMs;
-        if (Number.isFinite(weW) && Number.isFinite(wbW)) diffs.push(weW - wbW);
+        const re = enabledRows[i];
+        const rb = baselineRows[i];
+        if (re.note === "ok" && rb.note === "ok" && Number.isFinite(re.wallMs) && Number.isFinite(rb.wallMs)) {
+          diffs.push(re.wallMs - rb.wallMs);
+        }
       }
       if (diffs.length >= 2) {
         const m = benchMean(diffs);
@@ -3360,7 +3400,23 @@ if (window.__NPU_APP_SHELL_LOADED__) {
         };
       }
     }
-    return { perMetric: rows, pairedWall, bootstrapSamples: B, pairedInterleaved };
+    return {
+      perMetric: rows,
+      pairedWall,
+      bootstrapSamples: B,
+      pairedInterleaved,
+      validForInference: rows.length > 0,
+      validityHint:
+        rows.length > 0
+          ? ""
+          : okE.length >= 2 && okB.length >= 2
+            ? "Successful completions ran, but not enough paired metric samples for comparison tables."
+            : failParts.join(" "),
+      infoNote:
+        rows.length > 0 && (okE.length < enabledRows.length || okB.length < baselineRows.length)
+          ? `Averages and statistics use successful runs only (enabled ${okE.length}/${enabledRows.length} OK, baseline ${okB.length}/${baselineRows.length} OK).`
+          : "",
+    };
   }
 
   async function runToggleBenchmarkSuite() {
@@ -3461,13 +3517,18 @@ if (window.__NPU_APP_SHELL_LOADED__) {
       }
 
       function summarizeToggle(label, list) {
+        const total = list.length;
+        const okRows = list.filter((r) => r.note === "ok");
+        const okn = okRows.length;
         return {
           scenario: label,
-          runs: list.length,
-          avgWall: averageBenchNums(list.map((x) => x.wallMs)),
-          avgTtft: averageBenchNums(list.map((x) => x.ttft)),
-          avgTpot: averageBenchNums(list.map((x) => x.tpot)),
-          avgTps: averageBenchNums(list.map((x) => x.tps)),
+          runs: total,
+          runsTotal: total,
+          runsOk: okn,
+          avgWall: averageBenchNums(okRows.map((x) => x.wallMs)),
+          avgTtft: averageBenchNums(okRows.map((x) => x.ttft)),
+          avgTpot: averageBenchNums(okRows.map((x) => x.tpot)),
+          avgTps: averageBenchNums(okRows.map((x) => x.tps)),
         };
       }
       const s1 = summarizeToggle("acoulm_enabled", enabledRows);
@@ -3478,8 +3539,23 @@ if (window.__NPU_APP_SHELL_LOADED__) {
       const analysis = computeToggleBenchAnalysis(enabledRows, baselineRows, true);
       renderToggleBenchmarkTables([s1, s2], detailRows, foot, analysis);
 
-      addActivity("Feature compare benchmark finished", "ready");
-      setSystemFeedback("Feature compare finished — see tables below.", "ok");
+      const okAll = detailRows.filter((r) => r.note === "ok").length;
+      if (okAll === detailRows.length) {
+        addActivity("Feature compare benchmark finished", "ready");
+        setSystemFeedback("Feature compare finished — see tables below.", "ok");
+      } else if (okAll === 0) {
+        addActivity("Feature compare finished with no successful completions", "error");
+        setSystemFeedback(
+          "Feature compare finished but every chat completion failed — fix model/registry/backend before comparing performance.",
+          "error"
+        );
+      } else {
+        addActivity("Feature compare finished (partial failures — see OK column)", "ready");
+        setSystemFeedback(
+          "Feature compare finished with some failed completions; averages and stats use successful runs only.",
+          "neutral"
+        );
+      }
       completedOk = true;
       try {
         await fetchMetrics(true, "last");
