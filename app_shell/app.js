@@ -2978,7 +2978,7 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     return n.reduce((a, b) => a + b, 0) / n.length;
   }
 
-  function renderToggleBenchmarkTables(summaryRows, detailRows, footnote) {
+  function renderToggleBenchmarkTables(summaryRows, detailRows, footnote, analysis) {
     const wrap = el("toggleBenchmarkWrap");
     const note = el("toggleBenchmarkNote");
     if (!wrap) return;
@@ -3029,6 +3029,57 @@ if (window.__NPU_APP_SHELL_LOADED__) {
         ])
       )
     );
+
+    if (analysis && analysis.perMetric && analysis.perMetric.length) {
+      const hStat = document.createElement("h4");
+      hStat.className = "subpanel-title";
+      hStat.style.marginTop = "12px";
+      hStat.textContent = "Statistical comparison (Welch t, bootstrap CI, Cohen d)";
+      wrap.appendChild(hStat);
+      const pFoot = document.createElement("p");
+      pFoot.className = "hint";
+      pFoot.textContent =
+        "Welch t tests unequal-variance difference of means. Bootstrap 95% CI resamples within each scenario for mean(enabled)−mean(baseline) in native units. Cohen d (oriented): positive means enabled is better on that metric (lower wall/TTFT/TPOT, higher TPS). Paired wall row uses same run index after interleaved sampling.";
+      wrap.appendChild(pFoot);
+      wrap.appendChild(
+        mkTable(
+          ["Metric", "Welch t", "df", "|t|>crit?", "d (oriented)", "Boot CI lo", "Boot CI hi", "CI crosses 0"],
+          analysis.perMetric.map((r) => [
+            r.metric,
+            r.welchT != null ? r.welchT.toFixed(3) : "—",
+            r.welchDf != null ? r.welchDf.toFixed(2) : "—",
+            r.welchExceedsCrit ? "yes" : "no",
+            r.cohenDOriented != null ? r.cohenDOriented.toFixed(3) : "—",
+            r.bootstrapLoHi ? r.bootstrapLoHi.lo.toFixed(1) : "—",
+            r.bootstrapLoHi ? r.bootstrapLoHi.hi.toFixed(1) : "—",
+            r.bootstrapLoHi ? (r.bootstrapLoHi.crossesZero ? "yes" : "no") : "—",
+          ])
+        )
+      );
+      if (analysis.pairedWall) {
+        const hp = document.createElement("h4");
+        hp.className = "subpanel-title";
+        hp.style.marginTop = "10px";
+        hp.textContent = "Paired wall_ms (same run index, interleaved order)";
+        wrap.appendChild(hp);
+        const pw = analysis.pairedWall;
+        wrap.appendChild(
+          mkTable(
+            ["Mean diff ms (E−B)", "SD", "Cohen dz", "t paired", "t crit", "|t|>crit?"],
+            [
+              [
+                pw.meanDiffMs != null ? pw.meanDiffMs.toFixed(1) : "—",
+                pw.sdMs != null ? pw.sdMs.toFixed(1) : "—",
+                pw.cohensDz != null ? pw.cohensDz.toFixed(3) : "—",
+                pw.tPaired != null ? pw.tPaired.toFixed(3) : "—",
+                pw.tCrit975 != null ? pw.tCrit975.toFixed(3) : "—",
+                pw.significant ? "yes" : "no",
+              ],
+            ]
+          )
+        );
+      }
+    }
 
     const h2 = document.createElement("h4");
     h2.className = "subpanel-title";
@@ -3098,7 +3149,7 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     };
   }
 
-  async function runToggleBenchScenario(name, opts, prompt, modelId, warmupRuns, timedRuns, maxTokens) {
+  async function applyToggleBenchFeatureState(opts) {
     const { splitPrefill, contextRouting } = opts;
     const notes = [];
     const splitResult = await trySetFeatureBench("split-prefill", splitPrefill);
@@ -3113,25 +3164,174 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     } catch {
       // ignore
     }
+    return { notes };
+  }
 
-    for (let i = 0; i < warmupRuns; i += 1) {
-      await runOneToggleBenchInference(prompt, maxTokens, modelId);
+  function benchMean(vals) {
+    const v = vals.filter((x) => Number.isFinite(x));
+    if (!v.length) return null;
+    return v.reduce((a, b) => a + b, 0) / v.length;
+  }
+
+  function benchSampleStdDev(vals) {
+    const m = benchMean(vals);
+    if (vals.length < 2 || m == null) return null;
+    let acc = 0;
+    for (const x of vals) {
+      if (!Number.isFinite(x)) continue;
+      acc += (x - m) ** 2;
     }
+    const n = vals.filter((x) => Number.isFinite(x)).length;
+    if (n < 2) return null;
+    return Math.sqrt(acc / (n - 1));
+  }
 
+  function benchVariance(vals) {
+    const sd = benchSampleStdDev(vals);
+    return sd == null ? null : sd * sd;
+  }
+
+  function benchMedian(vals) {
+    const v = vals.filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+    if (!v.length) return null;
+    const mid = Math.floor(v.length / 2);
+    return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+  }
+
+  function welchTTest(x, y) {
+    const n1 = x.length;
+    const n2 = y.length;
+    if (n1 < 2 || n2 < 2) return null;
+    const m1 = benchMean(x);
+    const m2 = benchMean(y);
+    const v1 = benchVariance(x);
+    const v2 = benchVariance(y);
+    if (v1 == null || v2 == null) return null;
+    const se = Math.sqrt(v1 / n1 + v2 / n2);
+    if (se < 1e-15) return null;
+    const t = (m1 - m2) / se;
+    const vn1 = v1 / n1;
+    const vn2 = v2 / n2;
+    const df = (vn1 + vn2) ** 2 / (vn1 ** 2 / (n1 - 1) + vn2 ** 2 / (n2 - 1));
+    return { t, df, m1, m2, se };
+  }
+
+  function tcrit975(df) {
+    const t = [
+      12.706, 4.303, 3.182, 2.776, 2.571, 2.447, 2.365, 2.306, 2.262, 2.228, 2.201, 2.179, 2.16, 2.145, 2.131, 2.12, 2.11, 2.101, 2.093, 2.086, 2.08, 2.074, 2.069, 2.064, 2.06, 2.056, 2.052, 2.048, 2.045, 2.042, 2.04, 2.037, 2.035, 2.032, 2.03, 2.028, 2.026, 2.024, 2.021, 2.021,
+    ];
+    if (!Number.isFinite(df) || df < 1) return 12.706;
+    if (df >= 120) return 1.98;
+    if (df <= 40) {
+      const idx = Math.min(t.length - 1, Math.max(0, Math.ceil(df) - 1));
+      return t[idx];
+    }
+    if (df < 60) return 2.021 + ((2.0 - 2.021) * (df - 40)) / 20;
+    return 2.0 + ((1.98 - 2.0) * (df - 60)) / 60;
+  }
+
+  function bootstrapMeanDiffCI(e, b, B) {
+    const n1 = e.length;
+    const n2 = b.length;
+    if (n1 < 2 || n2 < 2 || B < 50) return null;
+    const diffs = [];
+    for (let k = 0; k < B; k += 1) {
+      let s1 = 0;
+      for (let j = 0; j < n1; j += 1) s1 += e[Math.floor(Math.random() * n1)];
+      let s2 = 0;
+      for (let j = 0; j < n2; j += 1) s2 += b[Math.floor(Math.random() * n2)];
+      diffs.push(s1 / n1 - s2 / n2);
+    }
+    diffs.sort((a, c) => a - c);
+    const loIdx = Math.floor(0.025 * (diffs.length - 1));
+    const hiIdx = Math.floor(0.975 * (diffs.length - 1));
+    return { lo: diffs[loIdx], hi: diffs[hiIdx] };
+  }
+
+  function pooledCohenD(x, y, sense) {
+    const n1 = x.length;
+    const n2 = y.length;
+    if (n1 < 2 || n2 < 2) return null;
+    const m1 = benchMean(x);
+    const m2 = benchMean(y);
+    const v1 = benchVariance(x);
+    const v2 = benchVariance(y);
+    if (v1 == null || v2 == null) return null;
+    const sp2 = ((n1 - 1) * v1 + (n2 - 1) * v2) / (n1 + n2 - 2);
+    if (sp2 < 1e-20) return null;
+    const sp = Math.sqrt(sp2);
+    const raw = (m1 - m2) / sp;
+    const oriented = sense === "higher_better" ? raw : -raw;
+    return { dRaw: raw, dOriented: oriented };
+  }
+
+  function computeToggleBenchAnalysis(enabledRows, baselineRows, pairedInterleaved) {
+    const pick = (rows, key) => rows.map((r) => r[key]).filter((v) => Number.isFinite(v));
+    const we = pick(enabledRows, "wallMs");
+    const wb = pick(baselineRows, "wallMs");
+    const te = pick(enabledRows, "ttft");
+    const tb = pick(baselineRows, "ttft");
+    const pe = pick(enabledRows, "tpot");
+    const pb = pick(baselineRows, "tpot");
+    const se = pick(enabledRows, "tps");
+    const sb = pick(baselineRows, "tps");
+
+    const B = 600;
     const rows = [];
-    for (let i = 0; i < timedRuns; i += 1) {
-      const r = await runOneToggleBenchInference(prompt, maxTokens, modelId);
+    const metrics = [
+      { label: "wall_ms", e: we, b: wb, sense: "lower_better" },
+      { label: "ttft_ms", e: te, b: tb, sense: "lower_better" },
+      { label: "tpot_ms", e: pe, b: pb, sense: "lower_better" },
+      { label: "status_tps", e: se, b: sb, sense: "higher_better" },
+    ];
+    for (const { label, e, b, sense } of metrics) {
+      if (e.length < 2 || b.length < 2) continue;
+      const w = welchTTest(e, b);
+      const co = pooledCohenD(e, b, sense);
+      const bs = bootstrapMeanDiffCI(e, b, B);
+      let welchSig = false;
+      if (w && Number.isFinite(w.df)) {
+        welchSig = Math.abs(w.t) > tcrit975(w.df);
+      }
       rows.push({
-        scenario: name,
-        runIndex: i + 1,
-        wallMs: r.wallMs,
-        ttft: r.ttft != null ? Number(r.ttft) : null,
-        tpot: r.tpot != null ? Number(r.tpot) : null,
-        tps: r.tps,
-        note: r.note,
+        metric: label,
+        meanEnabled: benchMean(e),
+        meanBaseline: benchMean(b),
+        medianEnabled: benchMedian(e),
+        medianBaseline: benchMedian(b),
+        welchT: w ? w.t : null,
+        welchDf: w ? w.df : null,
+        welchExceedsCrit: welchSig,
+        cohenDOriented: co ? co.dOriented : null,
+        bootstrapLoHi: bs ? { lo: bs.lo, hi: bs.hi, crossesZero: bs.lo <= 0 && bs.hi >= 0 } : null,
       });
     }
-    return { rows, notes };
+
+    let pairedWall = null;
+    if (pairedInterleaved && enabledRows.length === baselineRows.length) {
+      const diffs = [];
+      for (let i = 0; i < enabledRows.length; i += 1) {
+        const weW = enabledRows[i].wallMs;
+        const wbW = baselineRows[i].wallMs;
+        if (Number.isFinite(weW) && Number.isFinite(wbW)) diffs.push(weW - wbW);
+      }
+      if (diffs.length >= 2) {
+        const m = benchMean(diffs);
+        const sd = benchSampleStdDev(diffs);
+        const n = diffs.length;
+        const t = sd > 1e-15 ? m / (sd / Math.sqrt(n)) : null;
+        const crit = tcrit975(n - 1);
+        pairedWall = {
+          meanDiffMs: m,
+          sdMs: sd,
+          cohensDz: sd > 1e-15 ? m / sd : null,
+          tPaired: t,
+          tCrit975: crit,
+          significant: t != null && Math.abs(t) > crit,
+        };
+      }
+    }
+    return { perMetric: rows, pairedWall, bootstrapSamples: B, pairedInterleaved };
   }
 
   async function runToggleBenchmarkSuite() {
@@ -3157,30 +3357,79 @@ if (window.__NPU_APP_SHELL_LOADED__) {
       }
 
       const allNotes = [];
-      const footEnabled = await runToggleBenchScenario(
-        "acoulm_enabled",
-        { splitPrefill: true, contextRouting: true },
-        TOGGLE_BENCH_PROMPT,
-        modelId,
-        warmupRuns,
-        timedRuns,
-        maxTokens
-      );
-      allNotes.push(...footEnabled.notes);
 
-      const footBaseline = await runToggleBenchScenario(
-        "baseline_single_path",
-        { splitPrefill: false, contextRouting: false },
-        TOGGLE_BENCH_PROMPT,
-        modelId,
-        warmupRuns,
-        timedRuns,
-        maxTokens
-      );
-      allNotes.push(...footBaseline.notes);
+      const { notes: wn1 } = await applyToggleBenchFeatureState({ splitPrefill: true, contextRouting: true });
+      allNotes.push(...wn1);
+      for (let i = 0; i < warmupRuns; i += 1) {
+        await runOneToggleBenchInference(TOGGLE_BENCH_PROMPT, maxTokens, modelId);
+      }
 
-      const enabledRows = footEnabled.rows;
-      const baselineRows = footBaseline.rows;
+      const { notes: wn2 } = await applyToggleBenchFeatureState({ splitPrefill: false, contextRouting: false });
+      allNotes.push(...wn2);
+      for (let i = 0; i < warmupRuns; i += 1) {
+        await runOneToggleBenchInference(TOGGLE_BENCH_PROMPT, maxTokens, modelId);
+      }
+
+      const enabledRows = [];
+      const baselineRows = [];
+
+      for (let i = 0; i < timedRuns; i += 1) {
+        const enabledFirst = i % 2 === 0;
+        const runIndex = i + 1;
+        if (enabledFirst) {
+          const { notes: n1 } = await applyToggleBenchFeatureState({ splitPrefill: true, contextRouting: true });
+          allNotes.push(...n1);
+          const rE = await runOneToggleBenchInference(TOGGLE_BENCH_PROMPT, maxTokens, modelId);
+          enabledRows.push({
+            scenario: "acoulm_enabled",
+            runIndex,
+            wallMs: rE.wallMs,
+            ttft: rE.ttft != null ? Number(rE.ttft) : null,
+            tpot: rE.tpot != null ? Number(rE.tpot) : null,
+            tps: rE.tps,
+            note: rE.note,
+          });
+
+          const { notes: n2 } = await applyToggleBenchFeatureState({ splitPrefill: false, contextRouting: false });
+          allNotes.push(...n2);
+          const rB = await runOneToggleBenchInference(TOGGLE_BENCH_PROMPT, maxTokens, modelId);
+          baselineRows.push({
+            scenario: "baseline_single_path",
+            runIndex,
+            wallMs: rB.wallMs,
+            ttft: rB.ttft != null ? Number(rB.ttft) : null,
+            tpot: rB.tpot != null ? Number(rB.tpot) : null,
+            tps: rB.tps,
+            note: rB.note,
+          });
+        } else {
+          const { notes: n3 } = await applyToggleBenchFeatureState({ splitPrefill: false, contextRouting: false });
+          allNotes.push(...n3);
+          const rB2 = await runOneToggleBenchInference(TOGGLE_BENCH_PROMPT, maxTokens, modelId);
+          baselineRows.push({
+            scenario: "baseline_single_path",
+            runIndex,
+            wallMs: rB2.wallMs,
+            ttft: rB2.ttft != null ? Number(rB2.ttft) : null,
+            tpot: rB2.tpot != null ? Number(rB2.tpot) : null,
+            tps: rB2.tps,
+            note: rB2.note,
+          });
+
+          const { notes: n4 } = await applyToggleBenchFeatureState({ splitPrefill: true, contextRouting: true });
+          allNotes.push(...n4);
+          const rE2 = await runOneToggleBenchInference(TOGGLE_BENCH_PROMPT, maxTokens, modelId);
+          enabledRows.push({
+            scenario: "acoulm_enabled",
+            runIndex,
+            wallMs: rE2.wallMs,
+            ttft: rE2.ttft != null ? Number(rE2.ttft) : null,
+            tpot: rE2.tpot != null ? Number(rE2.tpot) : null,
+            tps: rE2.tps,
+            note: rE2.note,
+          });
+        }
+      }
 
       function summarizeToggle(label, list) {
         return {
@@ -3197,7 +3446,8 @@ if (window.__NPU_APP_SHELL_LOADED__) {
 
       const detailRows = [...enabledRows, ...baselineRows];
       const foot = allNotes.length ? allNotes.join(" ") : "";
-      renderToggleBenchmarkTables([s1, s2], detailRows, foot);
+      const analysis = computeToggleBenchAnalysis(enabledRows, baselineRows, true);
+      renderToggleBenchmarkTables([s1, s2], detailRows, foot, analysis);
 
       addActivity("Feature compare benchmark finished", "ready");
       setSystemFeedback("Feature compare finished — see tables below.", "ok");

@@ -43,7 +43,9 @@ export function BenchmarkSample() {
         </table>
       </div>
       <p className="mt-4 text-xs text-slate-500">
-        Source row: <code className="font-mono">benchmark_outputs/bench_summary_20260514-142010.json</code> in the repository. VRAM was not recorded (no NVIDIA sample path in that run).
+        Source row: <code className="font-mono">benchmark_outputs/bench_summary_20260514-142010.json</code> (block-ordered legacy sample). New runs add{" "}
+        <code className="font-mono">bench_analysis_*.json</code> with Welch t, bootstrap CIs, and Cohen&apos;s d; use{" "}
+        <code className="font-mono">-PairedInterleaved</code> in the script or the Control panel compare button for interleaved pairs. VRAM was not recorded (no NVIDIA sample path in that run).
       </p>
     </section>
   );

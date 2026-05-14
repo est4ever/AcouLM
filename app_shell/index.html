@@ -215,7 +215,7 @@
       </div>
       <div id="benchmarkTableWrap" class="bench-wrap"></div>
       <h3 class="subpanel-title">Feature compare (AcouLM vs baseline)</h3>
-      <p class="hint">Same sequence as <kbd>.\benchmark_acoulm_toggle.ps1</kbd>: tries split-prefill + context-routing + optimize-memory, then a baseline with those off, on one fixed prompt. Your feature toggles are restored when the run finishes. If split-prefill cannot enable (for example HTTP 409), the run continues with split-prefill off.</p>
+      <p class="hint">Same sequence as <kbd>.\benchmark_acoulm_toggle.ps1</kbd> (use <kbd>-PairedInterleaved</kbd> there for the same interleaved design the panel uses). Tries split-prefill + context-routing + optimize-memory, then a baseline with those off, on one fixed prompt. Your feature toggles are restored when the run finishes. If split-prefill cannot enable (for example HTTP 409), the run continues with split-prefill off.</p>
       <div class="row bench-toggle-row">
         <label>Warmup runs
           <input id="benchToggleWarmup" type="number" min="0" max="5" value="1" />

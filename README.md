@@ -183,9 +183,11 @@ To compare **AcouLM routing features on vs a simpler baseline** on your machine 
 .\benchmark_acoulm_toggle.ps1
 ```
 
+Each run also writes **`bench_analysis_<timestamp>.json`**: Welch two-sample *t* on means, percentile **bootstrap 95% CI** for mean(enabled)−mean(baseline) per metric, pooled **Cohen’s d** (with sign oriented so positive means “enabled wins” on that metric), and optional **paired** wall-time stats when you use **`-PairedInterleaved`**. That switch runs the same prompt each round but alternates which scenario runs first, so each run index is a fair pair for thermal drift—recommended when you care whether a few-percent wall-time gap is real or noise.
+
 Requires the stack running (`.\start_app.ps1`) and the API reachable at `http://127.0.0.1:8000` (override with `-ApiBase`). NVIDIA VRAM is sampled only when `nvidia-smi` is available; Intel GPU/NPU paths typically leave VRAM blank in that script.
 
-**Browser control panel:** open the app shell → **Control** → **System & health** → **Feature compare (AcouLM vs baseline)** → **Run feature compare**. This mirrors the PowerShell harness and restores your feature toggles afterward.
+**Browser control panel:** open the app shell → **Control** → **System & health** → **Feature compare (AcouLM vs baseline)** → **Run feature compare**. This uses the **paired interleaved** schedule, prints the statistical comparison table (Welch, bootstrap, Cohen *d*, paired wall row) after the averages, and restores your feature toggles afterward.
 
 **Illustrative numbers (not a guarantee — one Windows + GPU sample, `max_tokens=128`, four timed runs after one warmup):** in that run, enabling `split-prefill` failed with HTTP 409, so the “features on” side used **context-routing** + **optimize-memory** only (split-prefill stayed off). Averages from `benchmark_outputs/bench_summary_20260514-142010.json`:
 
