@@ -203,7 +203,9 @@
           <input id="telemetryEndpoint" type="text" placeholder="https://your-domain.example/telemetry" />
         </label>
       </div>
-      <p class="hint">Default is OFF. Telemetry sends only event type, app version, timestamp, anonymized install/session IDs, and runtime metadata (device/policy). No chat prompt or response text is sent.</p>
+      <p class="hint">
+        Default is OFF. <strong>Save</strong> stores the checkbox and URL in this browser only. If you turn telemetry ON and set a valid URL, the shell may POST small JSON events to <strong>your</strong> collector (event type, app version, timestamp, anonymized install/session IDs, device/policy)—never chat prompts or model output. The placeholder URL is an example; use your own HTTPS endpoint (for a minimal local receiver see <code>telemetry_server.py</code> in the repo).
+      </p>
       <div id="readinessSummary" class="readiness-summary"></div>
       <details class="raw-toggle">
         <summary>Readiness JSON</summary>

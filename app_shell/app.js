@@ -536,12 +536,31 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     document.body.dataset.theme = mode === "dark" ? "dark" : "light";
   }
 
+  /** Per-request timeout so a dead/wrong API base fails fast instead of hanging. */
+  const API_FETCH_TIMEOUT_MS = 5000;
+
+  function friendlyFetchError(err, baseUrlShown) {
+    const name = err && err.name;
+    const msg = String((err && err.message) || err || "unknown error");
+    if (name === "AbortError" || /aborted/i.test(msg)) {
+      return `Timed out after ${API_FETCH_TIMEOUT_MS / 1000}s — no response from ${baseUrlShown}. Check the API base URL and that the stack is running.`;
+    }
+    if (msg === "Failed to fetch" || /NetworkError|Load failed|ECONNREFUSED/i.test(msg)) {
+      return `Failed to fetch ${baseUrlShown} — nothing answered (start .\start_app.ps1 or acoulm; URL must match the REST API, usually ending in /v1).`;
+    }
+    return msg;
+  }
+
   async function requestJson(path, options = {}, allowFallback = true) {
     const currentBase = baseUrl();
+    const url = `${currentBase}${path}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), API_FETCH_TIMEOUT_MS);
     try {
       const { headers: optHeaders, ...restFetch } = options;
-      const response = await fetch(`${currentBase}${path}`, {
+      const response = await fetch(url, {
         ...restFetch,
+        signal: controller.signal,
         headers: { "Content-Type": "application/json", ...(optHeaders || {}) },
       });
 
@@ -553,6 +572,8 @@ if (window.__NPU_APP_SHELL_LOADED__) {
       setConnectionState("online");
       return payload;
     } catch (err) {
+      const mapped = new Error(friendlyFetchError(err, currentBase));
+      mapped.cause = err;
       // If the configured API base is wrong/unreachable, auto-heal to known local defaults once.
       const fallbackCandidates = [
         defaultApiBase(),
@@ -567,7 +588,9 @@ if (window.__NPU_APP_SHELL_LOADED__) {
         }
       }
       setConnectionState("offline", "request failed");
-      throw err;
+      throw mapped;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -2786,6 +2809,12 @@ if (window.__NPU_APP_SHELL_LOADED__) {
         wrap.className = "readiness-summary-row readiness-summary-error";
         wrap.textContent = `Could not load readiness: ${msg}`;
         sum.appendChild(wrap);
+        const hint = document.createElement("p");
+        hint.className = "hint";
+        hint.style.marginTop = "8px";
+        hint.textContent =
+          "Readiness is fetched from the API base URL at the top of this page (same host as /v1/chat/completions). Start the stack (e.g. .\\start_app.ps1 or acoulm), then refresh.";
+        sum.appendChild(hint);
       }
       setSystemFeedback(`Readiness failed: ${msg}`, "error");
     }
