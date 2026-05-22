@@ -13,7 +13,7 @@ export const quickStartCommands = [
       "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/est4ever/AcouLM/main/install.ps1' -UseBasicParsing))) -ShellOnly\"",
   },
   { title: "Setup", command: "cd $env:USERPROFILE\\AcouLM\n.\\portable_setup.ps1" },
-  { title: "One command (daily use)", command: "acoulm" },
+  { title: "One command (daily use)", command: "acoulm setup\nacoulm" },
   { title: "Start (UI + API)", command: ".\\start_app.ps1" },
   { title: "Optional: persist performance mode", command: ".\\start_app.ps1 -PerformanceMode" },
   { title: "Feature A/B benchmark (PowerShell)", command: ".\\benchmark_acoulm_toggle.ps1" },
@@ -100,6 +100,10 @@ export const faqs = [
   },
   {
     q: "Is AcouLM Windows-only?",
-    a: "AcouLM is currently targeted at Windows for local control plane workflows.",
+    a: "Windows 10/11 is the supported product today (install.ps1, acoulm, OpenVINO backend). Linux and NVIDIA CUDA paths exist but are experimental or still in development — see README platform support and GETTING_STARTED.md.",
+  },
+  {
+    q: "install.ps1 download failed — what now?",
+    a: "A GitHub Release must publish acoulm-dist-windows-x64.zip, or use install.ps1 -ShellOnly and build.ps1 from source. See GETTING_STARTED.md.",
   },
 ];

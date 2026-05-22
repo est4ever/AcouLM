@@ -2,33 +2,48 @@
 
 🌐 Website: https://est4ever.github.io/AcouLM/
 
-**Security:** see [SECURITY.md](SECURITY.md) (localhost bind, optional API token, SSH tunnels).
+**New users (Windows):** [GETTING_STARTED.md](GETTING_STARTED.md)  
+**Security:** [SECURITY.md](SECURITY.md) (localhost bind, optional API token, SSH tunnels).  
+**Publishing this repo:** [PUBLISH_CHECKLIST.md](PUBLISH_CHECKLIST.md).
 
-AcouLM is a local AI control plane for Windows:
-- browser app shell (`app_shell/`)
-- terminal client (`npu_cli.ps1`)
-- first-time setup (`portable_setup.ps1`) — machine registries and optional Hub model download
-- pluggable backends (`registry/backends_registry.json`)
+AcouLM is a local AI control plane: browser app shell (`app_shell/`), terminal clients, and a pluggable backend API. Use the built-in **OpenVINO** backend (`npu_wrapper`) or an **external** backend that implements the same HTTP API.
 
-You can run AcouLM with the built-in OpenVINO backend (`npu_wrapper`) or an external backend that supports the same API.
+## Platform support
 
-## Supercomputer (Linux) — quick start
+| Platform | Status | Notes |
+|----------|--------|--------|
+| **Windows 10/11 x64** | **Supported** (primary) | `acoulm.ps1`, `portable_setup.ps1`, `install.ps1`, GitHub release zip (`acoulm-dist-windows-x64.zip`) |
+| **Linux (desktop / dev)** | **Experimental** | `acoulm.sh`, `portable_setup.sh`, build from source; expect rough edges |
+| **Linux cluster (SLURM + OpenVINO)** | **Experimental** | `scripts/hpc/*`, `sbatch`; tested on specific HPC setups |
+| **Linux + NVIDIA CUDA (GGUF / llama.cpp)** | **In development** | `cuda-llama` proxy works on some nodes but is **not** fully polished; manual `local_env.sh`, GGUF path, and `llama-server` setup required |
 
-After `git push`, on the cluster:
+**For public users today:** treat **Windows** as the product. Linux paths are for contributors and early adopters who can debug env issues. Do not promise CUDA cluster support as “ready” until you have validated your target node.
+
+Windows daily use:
+
+- `portable_setup.ps1` (once) → `acoulm setup` → `acoulm`
+- Control panel: `http://127.0.0.1:5173` · API: `http://127.0.0.1:8000/v1`
+
+## Linux (experimental) — quick start
+
+> **Not production-ready.** APIs and scripts change; CUDA backend is incomplete. Use [scripts/hpc/README.txt](scripts/hpc/README.txt) and expect to edit `scripts/hpc/local_env.sh` by hand.
+
+**OpenVINO on a cluster (experimental):**
 
 ```bash
 git clone https://github.com/est4ever/AcouLM.git && cd AcouLM
-./portable_setup.sh                # asks for 3 paths (OpenVINO, model, backend) — like Windows
-source scripts/hpc/setup_env.sh
-./build.sh
-sbatch scripts/hpc/slurm_acoulm.sbatch
+./portable_setup.sh
+source scripts/hpc/setup_env.sh && ./build.sh
+./acoulm.sh setup && acoulm    # or: sbatch scripts/hpc/slurm_acoulm.sbatch
 ```
 
-Then from your laptop: `ssh -L 8000:<compute-node>:8000 user@cluster` and `./npu_cli.sh chat "Hello"`.
+**NVIDIA CUDA + GGUF (in development):** `bash scripts/hpc/configure_cuda_env.sh`, set `ACOULM_MODEL` to a `.gguf` file, `source scripts/hpc/local_env.sh`, then `acoulm`. See [GETTING_STARTED.md — Linux cluster (CUDA)](GETTING_STARTED.md#linux-cluster--cuda-gguf).
 
-Details: [scripts/hpc/README.txt](scripts/hpc/README.txt). Windows scripts (`acoulm.ps1`, `start_app.ps1`) are not used on the cluster.
+From your laptop: `ssh -L 8000:127.0.0.1:8000 -L 5173:127.0.0.1:5173 user@cluster`
 
-## User Prerequisites
+Windows scripts (`acoulm.ps1`, `start_app.ps1`) are **not** used on Linux.
+
+## User Prerequisites (Windows — supported)
 
 ### Hardware
 
@@ -53,11 +68,13 @@ Details: [scripts/hpc/README.txt](scripts/hpc/README.txt). Windows scripts (`aco
 
 ### Path A - App shell + bundled built-in runtime (recommended)
 
+Requires a [GitHub Release](https://github.com/est4ever/AcouLM/releases) asset **`acoulm-dist-windows-x64.zip`**. If no release exists yet, use [Path C](#path-c---manual-source-download) or `install.ps1 -ShellOnly` plus `.\build.ps1`.
+
 1. Install [Git for Windows](https://git-scm.com/download/win)
-2. Run:
+2. Run (downloads the release zip into `dist\`):
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/est4ever/AcouLM/main/install.ps1' -UseBasicParsing))) -ShellOnly"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/est4ever/AcouLM/main/install.ps1' -UseBasicParsing)))"
 ```
 
 3. Then:
@@ -65,26 +82,28 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create
 ```powershell
 cd $env:USERPROFILE\AcouLM
 .\portable_setup.ps1
+acoulm setup
+acoulm
 ```
 
 What this means:
-- Installs AcouLM app shell + downloads the prebuilt runtime bundle from GitHub Releases
-- Typically **no separate OpenVINO SDK install is required** for end users in this path
-- Intel drivers are still recommended if you plan to use Intel GPU/NPU acceleration
+- Installs AcouLM + prebuilt `npu_wrapper` from GitHub Releases
+- Typically **no separate OpenVINO SDK install** for end users
+- Intel drivers recommended for Intel GPU/NPU
 
 ### Path B - Shell-only install (external backend users)
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/est4ever/AcouLM/main/install.ps1' -UseBasicParsing))) -ShellOnly"
+cd $env:USERPROFILE\AcouLM
+.\portable_setup.ps1
 ```
 
-Then configure `registry\backends_registry.json` (`type: "external"`, valid `entrypoint`) and run `.\start_app.ps1`.
+Configure `registry\backends_registry.json` (`type: "external"`, valid `entrypoint`), then `acoulm setup` and `acoulm`.
 
 What this means:
-- Installs only the AcouLM shell/control plane
-- You bring your own backend/runtime
-- No OpenVINO install is needed unless your chosen backend requires it
-- `portable_setup.ps1` now skips built-in `dist\npu_wrapper.exe` checks when backend type is `external`
+- Control plane only; you supply the backend/runtime
+- No OpenVINO required unless your backend needs it
 
 ### Path C - Manual source download
 
@@ -108,11 +127,22 @@ Custom install folder:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/est4ever/AcouLM/main/install.ps1' -UseBasicParsing))) -ShellOnly -InstallDir 'D:\AI\AcouLM'"
 ```
 
-Pin a specific release tag:
+Pin a specific release tag (must exist on [Releases](https://github.com/est4ever/AcouLM/releases)):
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/est4ever/AcouLM/main/install.ps1' -UseBasicParsing))) -ShellOnly -ReleaseTag v1.0.0"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/est4ever/AcouLM/main/install.ps1' -UseBasicParsing))) -ReleaseTag v1.0.1"
 ```
+
+### If PowerShell says `portable_setup.ps1` is not recognized
+
+Windows does **not** run scripts from the current folder unless you prefix `.\`:
+
+```powershell
+cd C:\Users\GodBlessed\AcouLM   # your clone path
+.\portable_setup.ps1
+```
+
+Or double-click / run from cmd: `portable_setup.cmd` (same script, no `.\` required).
 
 ### If scripts are blocked
 
@@ -352,6 +382,8 @@ Runtime secrets/registries remain excluded from git:
 
 ## Developer Docs
 
+- `GETTING_STARTED.md` — all user setup paths
+- `PUBLISH_CHECKLIST.md` — before going public
 - `ARCHITECTURE.md`
 - `API_CONTRACT_V1.md`
 - `CLI_USAGE.md`
