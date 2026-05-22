@@ -50,7 +50,9 @@ function Install-OptimumOpenVinoExport {
     $oldEap = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        & $PythonExe -m pip install -U "optimum" "optimum-intel[openvino]" "openvino" 2>&1 | Out-Host
+        & $PythonExe -m pip install -U "optimum" "optimum-intel[openvino]" "openvino" 2>&1 |
+            Where-Object { $_ -notmatch 'WARNING: Ignoring invalid distribution' } |
+            ForEach-Object { Write-Host $_ }
         if ($LASTEXITCODE -ne 0) {
             throw "[IR] pip install optimum-intel[openvino] failed with exit code $LASTEXITCODE"
         }

@@ -6,7 +6,20 @@
 **Security:** [SECURITY.md](SECURITY.md) (localhost bind, optional API token, SSH tunnels).  
 **Publishing this repo:** [PUBLISH_CHECKLIST.md](PUBLISH_CHECKLIST.md).
 
-AcouLM is a local AI control plane: browser app shell (`app_shell/`), terminal clients, and a pluggable backend API. Use the built-in **OpenVINO** backend (`npu_wrapper`) or an **external** backend that implements the same HTTP API.
+AcouLM is a **local AI shell** — the same experience everywhere:
+
+- **Browser control panel** (`app_shell/`) and **`acoulm`** terminal chat
+- **One HTTP API** (`/v1/*`) that any backend can implement
+- **Your models, your machine** — weights stay local
+
+AcouLM does **not** assume Intel, NVIDIA, or AMD. It assumes a **backend** you choose in `registry/backends_registry.json`:
+
+| Backend | Who provides inference | Typical hardware |
+|---------|------------------------|------------------|
+| **Built-in** (`npu_wrapper`, OpenVINO GenAI) | Shipped in release zip or `build.ps1` | x64 CPU; GPU/NPU when OpenVINO discovers devices |
+| **External** (`type: "external"`) | You (Ollama, llama.cpp CUDA, custom server, etc.) | Whatever that server supports |
+
+**Path B (shell-only)** is the “fits anywhere” install: control plane only, no OpenVINO required. **Path A** bundles the OpenVINO reference backend for Windows users who want one-command setup.
 
 ## Platform support
 
@@ -17,7 +30,7 @@ AcouLM is a local AI control plane: browser app shell (`app_shell/`), terminal c
 | **Linux cluster (SLURM + OpenVINO)** | **Experimental** | `scripts/hpc/*`, `sbatch`; tested on specific HPC setups |
 | **Linux + NVIDIA CUDA (GGUF / llama.cpp)** | **In development** | `cuda-llama` proxy works on some nodes but is **not** fully polished; manual `local_env.sh`, GGUF path, and `llama-server` setup required |
 
-**For public users today:** treat **Windows** as the product. Linux paths are for contributors and early adopters who can debug env issues. Do not promise CUDA cluster support as “ready” until you have validated your target node.
+**For public users today:** treat **Windows** as the primary packaged path. Linux and CUDA cluster scripts are for contributors and custom deployments — the **shell and API are the same**; only the backend entrypoint changes.
 
 Windows daily use:
 
@@ -45,18 +58,17 @@ Windows scripts (`acoulm.ps1`, `start_app.ps1`) are **not** used on Linux.
 
 ## User Prerequisites (Windows — supported)
 
-### Hardware
+### Hardware (depends on backend)
 
-- Windows 10/11 x64 machine
-- CPU required
-- Intel GPU/NPU optional (for accelerator paths with built-in backend)
-- Enough RAM for your selected model size
+- **Shell only:** any Windows 10/11 x64 PC that can run your external backend
+- **Built-in OpenVINO backend:** x64 CPU required; optional GPU/NPU if OpenVINO lists them (NVIDIA, AMD, Intel — vendor-agnostic at the API level)
+- Enough RAM for your model (all paths)
 
 ### Software
 
 - [Git for Windows](https://git-scm.com/download/win) (required for installer/clone flows)
 - PowerShell (built into Windows)
-- Optional: updated Intel GPU/NPU drivers when using accelerator devices
+- **Built-in backend:** GPU/NPU drivers for your chip vendor (Intel, NVIDIA, AMD, etc.) as needed
 - Optional: [Hugging Face Hub CLI](https://huggingface.co/docs/huggingface_hub/guides/cli) (`hf` or `huggingface-cli`, from `pip install -U "huggingface_hub[cli]"`). Required for **partial** Hub downloads (non-empty file/pattern filter) in [First-time setup](#first-time-setup). Without the CLI, that path errors; with an empty filter, setup may fall back to `git clone` and pull the **entire** model repository (including `.git`).
 
 ### What AcouLM Does Not Bundle
@@ -89,7 +101,7 @@ acoulm
 What this means:
 - Installs AcouLM + prebuilt `npu_wrapper` from GitHub Releases
 - Typically **no separate OpenVINO SDK install** for end users
-- Intel drivers recommended for Intel GPU/NPU
+- Install GPU/NPU drivers for your hardware if you use the built-in backend on accelerators
 
 ### Path B - Shell-only install (external backend users)
 
@@ -160,20 +172,32 @@ The script **`portable_setup.ps1`** (repo root) initializes this machine. Run it
 
 If you use a **non-empty** “Files/patterns” filter there (to fetch only some blobs, for example a single `.gguf`), install the **Hugging Face Hub CLI** first; see **User Prerequisites → Software**. For inference, the built-in stack uses **OpenVINO GenAI** with either **IR** (`.xml`) or a **supported `.gguf`** (see [Model Notes](#model-notes)).
 
+## Speed (important)
+
+| What you see | What it is |
+|--------------|------------|
+| `Compiling model...` for 1–10+ min | **OpenVINO** compiling **GGUF** on your GPU/CPU — not the browser control panel |
+| `Hot start` in a few seconds | Backend still running with model in memory — **use this for daily work** |
+| Slow every launch | You are reloading **GGUF** (especially on integrated GPU). **Fix:** export **OpenVINO IR once** (`portable_setup.ps1` HF→IR or `Export-HfFolderToOpenVinoIR.ps1`), or use `acoulm cpu` on weak GPUs |
+| Integrated GPU + 3B GGUF | Often faster to load on **CPU**; `acoulm` does this by default unless `ACOULM_DEVICE=GPU` |
+
+Leave `npu_wrapper.exe` running between chats. Do not close the hidden backend window if you want instant restarts.
+
 ## Daily Use
 
-**One command:** `acoulm` (after one-time `acoulm setup` on a new machine).
+**One command:** `acoulm`
 
-On a **new clone or new PC**:
-
-```powershell
-acoulm setup
-```
-
-Then daily use:
+- **First time** (no model yet): `acoulm` runs a short setup wizard (recommended **Qwen2.5-0.5B**), then starts.
+- **Every day after:** `acoulm` picks the **fastest runnable** model on disk (OpenVINO **IR** beats big **GGUF**).
 
 ```powershell
 acoulm
+```
+
+Optional one-time PATH helper:
+
+```powershell
+acoulm setup
 ```
 
 That starts the **control panel** (`http://localhost:5173`), **backend API** (`http://localhost:8000/v1`) if needed, opens the browser, and drops you into **terminal chat**.
@@ -321,6 +345,45 @@ Template files included:
 Where backends come from:
 - Built-in backend runtime is delivered by the release zip (`acoulm-dist-windows-x64.zip`)
 - External backend is user-supplied and registered in `registry/backends_registry.json`
+
+## What if OpenVINO doesn't support my model?
+
+**The built-in backend does not run every Hugging Face download as-is.** Downloading a model from the Hub often gives **`.safetensors` checkpoints**, which `npu_wrapper` cannot load directly. You need a **runnable layout** or a different backend.
+
+### What the built-in backend accepts
+
+| Layout | Works with built-in OpenVINO? |
+|--------|------------------------------|
+| **OpenVINO IR** folder (`.xml` + weights) | Yes — most reliable |
+| **One** `.gguf` file (or folder with exactly one `.gguf`) | Often — GenAI preview; architecture and quant limits apply |
+| **Raw Hugging Face** (`.safetensors` only, no IR) | **No** — convert first |
+| **Several `.gguf` files** in one folder | **No** — pick one file or export IR |
+| **Some GGUF quants** (e.g. IQ2 / IQ3) | Often **fails at load** (`gguf_tensor_to_f16 failed`) — try **Q4_K_M** or **Q8_0**, or IR |
+
+### At setup (`portable_setup.ps1`)
+
+- **Safetensors download:** setup warns that weights are not runnable until converted. You can run **automatic IR export** (Optimum Intel) when prompted; large or vision models may fail export.
+- **GGUF download:** registry format is set to `gguf`; setup warns about unsupported quants (IQ*).
+- **Bad Hub filter / empty folder:** setup errors and asks you to fix patterns or download the full repo.
+
+### At launch (`acoulm` / `start_app.ps1`)
+
+- Path **not runnable** (no IR, no single GGUF): AcouLM may **fall back** to another runnable model in the registry (yellow warning), try **auto IR export** from safetensors (`ACOULM_AUTO_EXPORT_IR=1` or `.\start_app.ps1 -AutoExportIr`), or **stop with a clear error** and hints (edit registry, run `.\preflight_check.ps1`, switch backend).
+- **Multiple GGUFs** in one folder: launch fails with instructions to register one file or add IR.
+- **Missing path:** launch fails with “model path not found”.
+
+### After the API is running
+
+If the folder looks valid but OpenVINO **rejects** the architecture or quantization:
+
+- Model load fails; control panel may show **Model/Backend error** or `chat_ready: false` on `/v1/health`
+- Chat returns errors instead of answers (check backend logs)
+
+**Fixes:** export to **IR**, use a **Q4_K_M / Q8_0** GGUF from the same model family, pick another registry model, or use an **external** backend (Ollama, llama.cpp, etc.) that supports your format.
+
+### External backend (when OpenVINO is not enough)
+
+Set `registry/backends_registry.json` to **`type: "external"`** with your `entrypoint`. AcouLM only checks that the path exists and passes it to **your** server — HF, ONNX, GGUF, etc. are your backend’s responsibility, not OpenVINO’s.
 
 ## Model Notes
 

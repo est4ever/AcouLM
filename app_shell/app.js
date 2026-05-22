@@ -113,6 +113,9 @@ if (window.__NPU_APP_SHELL_LOADED__) {
   }
 
   function defaultApiBase() {
+    if (typeof window !== "undefined" && window.location.protocol.startsWith("http")) {
+      return `${window.location.origin}/v1`;
+    }
     return "http://127.0.0.1:8000/v1";
   }
 
@@ -216,6 +219,21 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     connectionState = state;
     connectionDetail = detail || "";
     renderConnectionBadge();
+    updateWelcomeBanner();
+  }
+
+  function updateWelcomeBanner() {
+    const node = document.querySelector(".acoulm-welcome-text");
+    if (!node) return;
+    if (connectionState === "online") {
+      node.textContent = "Welcome to AcouLM — API connected. Chat and controls are live.";
+    } else if (connectionState === "checking") {
+      node.textContent =
+        "Welcome to AcouLM — connecting to the API (run acoulm in a terminal if you have not yet).";
+    } else {
+      node.textContent =
+        "Welcome to AcouLM — control panel only until the API is up. Run acoulm and wait for [ready], then refresh this page.";
+    }
   }
 
   function setCliThinking(thinking) {
@@ -296,9 +314,7 @@ if (window.__NPU_APP_SHELL_LOADED__) {
 
       source.onopen = () => {
         cliEventsConnected = true;
-        if (connectionState !== "offline") {
-          setConnectionState("online", "events");
-        }
+        setConnectionState("online", "events");
       };
 
       source.onerror = () => {
@@ -2362,7 +2378,16 @@ if (window.__NPU_APP_SHELL_LOADED__) {
       if (status) {
         status.textContent = `API reachable. backend=${result.backend} status=${result.status}`;
       }
+      if (result && result.chat_ready === false) {
+        setConnectionState("checking", "loading model");
+      } else {
+        setConnectionState("online", "");
+        if (!statusCache) {
+          void refreshStatus().catch(() => {});
+        }
+      }
     } catch {
+      setConnectionState("offline", "request failed");
       const status = el("statusOutput");
       if (status) {
         status.textContent = "Reconnect failed: API is unreachable.";
@@ -2745,24 +2770,33 @@ if (window.__NPU_APP_SHELL_LOADED__) {
   }
 
   async function bootstrap() {
+    let bootstrapError = null;
     try {
-      await Promise.all([
-        refreshStatus(),
-        refreshModelRegistry(),
-        refreshBackendRegistry(),
-        fetchMetrics(true, "last"),
-        fetchMemoryEvidence(true),
-      ]);
+      await refreshStatus();
+    } catch (err) {
+      bootstrapError = err;
+    }
+    const secondary = await Promise.allSettled([
+      refreshModelRegistry(),
+      refreshBackendRegistry(),
+      fetchMetrics(true, "last"),
+      fetchMemoryEvidence(true),
+    ]);
+    for (const r of secondary) {
+      if (r.status === "rejected" && !bootstrapError) {
+        bootstrapError = r.reason;
+      }
+    }
+    if (bootstrapError) {
+      el("statusOutput").textContent = String(bootstrapError.message || bootstrapError);
+      addActivity(`Bootstrap error: ${String(bootstrapError.message || bootstrapError)}`, "error");
+    } else {
       addActivity("Runtime ready", "ready");
       setRuntimeStrip();
-    } catch (err) {
-      el("statusOutput").textContent = String(err.message || err);
-      addActivity(`Bootstrap error: ${String(err.message || err)}`, "error");
-    } finally {
-      updateThresholdControlState();
-      validateThresholdInput();
-      renderCommandList();
     }
+    updateThresholdControlState();
+    validateThresholdInput();
+    renderCommandList();
   }
 
   function clearStackRestartCountdown() {
@@ -4314,6 +4348,7 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     }
 
     setRuntimeStrip();
+    updateWelcomeBanner();
     startTelemetryHeartbeat();
     void sendTelemetryEvent("app_start");
     bindGlobalShortcuts();

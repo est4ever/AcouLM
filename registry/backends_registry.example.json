@@ -7,7 +7,8 @@
       "type": "builtin",
       "entrypoint": "dist/npu_wrapper.exe",
       "formats": ["openvino", "gguf"],
-      "status": "ready"
+      "status": "ready",
+      "_comment": "Reference backend (OpenVINO). Replace or add type:external for Ollama, llama.cpp CUDA, etc. — the AcouLM shell stays the same."
     }
   ]
 }

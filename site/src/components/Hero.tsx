@@ -14,7 +14,7 @@ export function Hero() {
           <span className="text-accent">orchestrated.</span>
         </motion.h1>
         <motion.p initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }} className="mt-6 max-w-2xl text-xl leading-8 text-slate-300">
-          AcouLM connects a browser UI, terminal CLI, and OpenAI-style API to local inference backends across CPU, GPU, and NPU.
+          A local AI shell — browser UI, terminal CLI, and one API — wired to whatever backend you run (OpenVINO, CUDA, Ollama, your own server).
         </motion.p>
 
         <div className="mt-6 flex flex-wrap gap-3">

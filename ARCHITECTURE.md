@@ -1,3 +1,43 @@
+# AcouLM architecture
+
+## Product model: shell first
+
+AcouLM is a **local control plane**, not a single inference engine:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  AcouLM shell (same on every host)                          │
+│  • app_shell/     browser UI (chat, controls)               │
+│  • acoulm / npu_cli   terminal clients                      │
+│  • RestAPIServer  OpenAI-style + /v1/cli/* API :8000      │
+└────────────────────────────┬────────────────────────────────┘
+                             │ HTTP (registry-selected backend)
+              ┌──────────────┴──────────────┐
+              ▼                             ▼
+   ┌─────────────────────┐      ┌─────────────────────┐
+   │ Built-in backend     │      │ External backend     │
+   │ (e.g. npu_wrapper,   │      │ (your entrypoint:    │
+   │  OpenVINO GenAI)     │      │  Ollama, llama.cpp,  │
+   │                      │      │  cluster proxy, …)   │
+   └─────────────────────┘      └─────────────────────┘
+              │                             │
+              ▼                             ▼
+        Host CPU/GPU/NPU              Whatever that
+        OpenVINO exposes              server supports
+```
+
+**Registry** (`registry/backends_registry.json`) selects which executable/script receives model paths and device hints. **Models** (`registry/models_registry.json`) are user-supplied paths/formats.
+
+| Layer | Vendor lock-in? |
+|-------|------------------|
+| Shell (UI, CLI, API) | **No** — works with any backend implementing the contract |
+| Built-in `npu_wrapper` | **OpenVINO** — common Windows default; not required for shell-only installs |
+| External backends | **User-defined** — CUDA, ROCm, Metal, remote cluster, etc. |
+
+Hardware detection in launchers (`scripts/AcouLM-Device.ps1`) only affects **defaults** for the built-in backend (e.g. prefer discrete GPU). External backends ignore it unless you wire env vars yourself.
+
+---
+
 # Architecture: Chat vs. Configuration Control
 
 ## New Architecture (After Refactoring)
@@ -63,7 +103,7 @@
       │ Everything flows through /v1/chat/completions
       │
       ▼
-   RestAPI ────► Backend (OpenVINO)
+   RestAPI ────► Backend (implementation-specific)
 ```
 
 ## Key Benefits of New Architecture

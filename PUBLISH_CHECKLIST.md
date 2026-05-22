@@ -32,11 +32,12 @@ Use this before announcing AcouLM publicly. End users should follow [GETTING_STA
 **Windows**
 
 ```powershell
-.\preflight_check.ps1
-acoulm setup
+.\portable_setup.ps1   # pick setup option 1 (GGUF quick) unless you want IR export
 acoulm
 # Browser: http://127.0.0.1:5173 — health OK, chat works
 ```
+
+First-time **IR export** (setup option 2 + Yes to export) can take **15-45+ minutes** — that is Optimum/PyTorch, not AcouLM hanging. Default setup is now **GGUF quick path** to avoid that wait.
 
 **Linux / cluster (if you support it)**
 

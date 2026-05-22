@@ -221,11 +221,17 @@ std::string classify_openvino_device_tier(const std::string& device_id, const st
         return static_cast<char>(std::tolower(c));
     });
     if (lower.find("nvidia") != std::string::npos || lower.find("geforce") != std::string::npos ||
-        lower.find("radeon rx") != std::string::npos || lower.find("arc") != std::string::npos) {
+        lower.find("quadro") != std::string::npos || lower.find("tesla") != std::string::npos ||
+        lower.find("gtx") != std::string::npos || lower.find("rtx") != std::string::npos ||
+        lower.find("radeon rx") != std::string::npos || lower.find("radeon pro") != std::string::npos ||
+        lower.find("firepro") != std::string::npos || lower.find("instinct") != std::string::npos ||
+        lower.find("arc") != std::string::npos) {
         return "discrete";
     }
     if (lower.find("uhd") != std::string::npos || lower.find("iris") != std::string::npos ||
-        lower.find("hd graphics") != std::string::npos || lower.find("vega") != std::string::npos) {
+        lower.find("hd graphics") != std::string::npos || lower.find("vega") != std::string::npos ||
+        lower.find("radeon(tm) graphics") != std::string::npos || lower.find("780m") != std::string::npos ||
+        lower.find("880m") != std::string::npos || lower.find("760m") != std::string::npos) {
         return "integrated";
     }
     return "unknown";

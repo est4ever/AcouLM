@@ -244,11 +244,11 @@ function Add-OrUpdateBackend {
 
     function Resolve-DefaultFormats {
         param([string]$T, [string[]]$Explicit)
-        if ($Explicit -and $Explicit.Count -gt 0) { return ,@($Explicit) }
+        if ($Explicit -and $Explicit.Count -gt 0) { return @($Explicit) }
         if ($T -eq "external") {
-            return ,@("hf", "safetensors", "gguf", "openvino")
+            return @("hf", "safetensors", "gguf", "openvino")
         }
-        return ,@("openvino", "gguf")
+        return @("openvino", "gguf")
     }
 
     if ($null -eq $existing) {
@@ -265,9 +265,9 @@ function Add-OrUpdateBackend {
         $existing.type = $Type
         $existing.entrypoint = $Entrypoint
         if ($Formats -and $Formats.Count -gt 0) {
-            $existing.formats = ,@($Formats)
+            $existing.formats = @($Formats)
         } elseif ($Type -eq "builtin") {
-            $existing.formats = ,@("openvino", "gguf")
+            $existing.formats = @("openvino", "gguf")
         }
         $existing.status = "ready"
     }
@@ -489,13 +489,66 @@ try {
     }
 } catch {}
 
-if (Read-YesNo -Prompt "Download a model from Hugging Face now?" -DefaultYes $false) {
+$resolveScript = Join-Path $scriptDir "scripts\Resolve-AcouLMModel.ps1"
+$hasRunnable = $false
+if (Test-Path -LiteralPath $resolveScript) {
+    try {
+        $r = & $resolveScript -ProjectRoot $scriptDir
+        $hasRunnable = [bool]$r.Ok
+    } catch {}
+}
+
+$offerDownload = -not $hasRunnable
+if ($hasRunnable) {
+    Write-Host "[Setup] Runnable model already on disk — skipping download." -ForegroundColor Green
+} elseif ($offerDownload) {
+    Write-Host ""
+    Write-Host "[Setup] No runnable model yet (need OpenVINO IR folder or one .gguf file)." -ForegroundColor Yellow
+    Write-Host "[Setup] IR export from Hugging Face weights often takes 15-45 minutes — not required for first chat." -ForegroundColor DarkGray
+}
+
+if ($offerDownload -and (Read-YesNo -Prompt "Download a small model from Hugging Face now?" -DefaultYes $true)) {
+    $quickGguf = $true
+    if ($backendType -eq "builtin") {
+        Write-Host ""
+        Write-Host "Setup speed (built-in OpenVINO backend):" -ForegroundColor Cyan
+        Write-Host "  1) Quick  — one Q4_K_M GGUF (~0.4 GB). Chat after first compile (~5-15 min). [default]" -ForegroundColor DarkGray
+        Write-Host "  2) IR path — full HF snapshot; optional export (15-45+ min). Best for fast daily restarts later." -ForegroundColor DarkGray
+        $modeIn = Read-Host "Choice [1/2] (Enter = 1)"
+        $quickGguf = [string]::IsNullOrWhiteSpace($modeIn) -or $modeIn.Trim() -eq "1"
+    }
+
+    if ($quickGguf -and $backendType -eq "builtin") {
+        $repo = "bartowski/Qwen2.5-0.5B-Instruct-GGUF"
+        $filesFilter = "Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+        Write-Host "[Setup] Quick path: downloading $filesFilter from $repo ..." -ForegroundColor Cyan
+        $downloadedId = Download-Model -Repo $repo -ModelId "" -FilesFilter $filesFilter
+        if ([string]::IsNullOrWhiteSpace(($downloadedId + "").Trim())) {
+            throw "[Setup] GGUF download failed. Try setup again and pick option 2, or run: acoulm model download $repo <folder> $filesFilter"
+        }
+        $modelId = $downloadedId
+        $ggufPath = Join-Path $scriptDir (Join-Path "models" (Join-Path $downloadedId $filesFilter))
+        if (-not (Test-Path -LiteralPath $ggufPath)) {
+            $dir = Join-Path $scriptDir (Join-Path "models" $downloadedId)
+            $one = @(Get-ChildItem -LiteralPath $dir -Filter "*.gguf" -File -ErrorAction SilentlyContinue)
+            if ($one.Count -eq 1) { $ggufPath = $one[0].FullName }
+        }
+        if (Test-Path -LiteralPath $ggufPath) {
+            $modelPath = "./models/$downloadedId/" + [System.IO.Path]::GetFileName($ggufPath)
+            $modelFormat = "gguf"
+            Write-Host "[Setup] GGUF ready. Run acoulm — first load compiles once; keep backend warm for instant restarts." -ForegroundColor Green
+        } else {
+            throw "[Setup] Expected GGUF under models\$downloadedId"
+        }
+    } else {
     Write-Host ""
     Write-Host "Two-step Hub download:" -ForegroundColor Cyan
     Write-Host "  1) Repo id = the model's page on huggingface.co (format: Organization/Name). Not a local filename." -ForegroundColor DarkGray
     Write-Host "  2) Folder name under .\models\ and optional file filter (comma-separated Hub paths / globs)." -ForegroundColor DarkGray
     Write-Host ""
-    $repo = Read-Host "Hugging Face repo id (org/model, e.g. Qwen/Qwen2.5-0.5B-Instruct or google/gemma-2-2b-it)"
+    $repoDefault = "Qwen/Qwen2.5-0.5B-Instruct"
+    $repoIn = Read-Host "Hugging Face repo id (Enter = $repoDefault)"
+    $repo = if ([string]::IsNullOrWhiteSpace($repoIn)) { $repoDefault } else { $repoIn.Trim() }
     $idInput = Read-Host "Local folder name under .\models\ (blank = last segment of repo id)"
     Write-Host "File filter - press Enter alone to download the entire repo (all shards + tokenizers; large but no pattern guessing)." -ForegroundColor DarkGray
     Write-Host "Or list comma-separated patterns for hf download --include (each can be a glob). Do NOT paste your local folder name here." -ForegroundColor DarkGray
@@ -546,7 +599,7 @@ Write-Host "GenAI GGUF preview: prefer Q4_K_M / Q8_0 / FP16-style files; IQ2/IQ3
             $modelFormat = "safetensors"
             if ($backendType -eq "builtin") {
             Write-Host "[Setup] Downloaded Hugging Face .safetensors weights (not runnable until converted to OpenVINO IR)." -ForegroundColor Yellow
-            if (Read-YesNo -Prompt "Run automatic OpenVINO IR export now (installs optimum-intel + PyTorch if needed; long run; VLMs may fail)?" -DefaultYes $true) {
+            if (Read-YesNo -Prompt "Run OpenVINO IR export now? (15-45+ min; installs optimum-intel + PyTorch; say No to use GGUF quick path or export later)" -DefaultYes $false) {
                 $irOut = Join-Path $scriptDir (Join-Path "models" "${downloadedId}-ov-ir")
                 $exportScript = Join-Path $scriptDir "Export-HfFolderToOpenVinoIR.ps1"
                 & $exportScript -ProjectRoot $scriptDir -HfModelDir $dlForFormat -IrOutputDir $irOut -TrustRemoteCode
@@ -559,13 +612,15 @@ Write-Host "GenAI GGUF preview: prefer Q4_K_M / Q8_0 / FP16-style files; IQ2/IQ3
                     Write-Host "[Setup] Export finished without .xml in output. You can re-run: .\Export-HfFolderToOpenVinoIR.ps1 ... or .\start_app.ps1 -AutoExportIr" -ForegroundColor Yellow
                 }
             } else {
-                Write-Host "        Skip: run later: .\Export-HfFolderToOpenVinoIR.ps1 -ProjectRoot '$scriptDir' -HfModelDir '$dlForFormat' -IrOutputDir '.\models\${downloadedId}-ov-ir' -TrustRemoteCode" -ForegroundColor DarkGray
-                Write-Host "        Or: .\start_app.ps1 -AutoExportIr (uses registry selected HF folder)." -ForegroundColor DarkGray
+                Write-Host "[Setup] Safetensors saved but not runnable until IR exists. Run acoulm anyway to export in background, or:" -ForegroundColor Yellow
+                Write-Host "        .\Export-HfFolderToOpenVinoIR.ps1 -ProjectRoot '$scriptDir' -HfModelDir '$dlForFormat' -IrOutputDir '.\models\${downloadedId}-ov-ir' -TrustRemoteCode" -ForegroundColor DarkGray
+                Write-Host "        Or re-run setup and pick option 1 (GGUF quick path)." -ForegroundColor DarkGray
             }
             } else {
                 Write-Host "[Setup] Hugging Face .safetensors snapshot saved. External backend: start_app passes this path to your entrypoint as-is (no OpenVINO export in setup)." -ForegroundColor Cyan
             }
         }
+    }
     }
 } else {
     $pathInput = Read-Host "Model path (default: ./models)"
@@ -575,6 +630,10 @@ Write-Host "GenAI GGUF preview: prefer Q4_K_M / Q8_0 / FP16-style files; IQ2/IQ3
 }
 
 Add-OrUpdateModel -RegistryPath $modelsRegistryPath -Id $modelId -Path $modelPath -Format $modelFormat -Backend $backendId
+
+if (Test-Path -LiteralPath $resolveScript) {
+    $null = & $resolveScript -ProjectRoot $scriptDir
+}
 
 $enablePerformanceMode = $false
 if ($backendType -eq "builtin") {
@@ -610,6 +669,32 @@ if (-not $NoLaunch) {
         }
         if ($LASTEXITCODE -ne 0) {
             throw "start_app.ps1 failed"
+        }
+        # Old setups used plain http.server (no /v1 proxy) — browser shows API offline. Restart with appshell_server.
+        $appLauncher = Join-Path $scriptDir "scripts\Start-AppShellServer.ps1"
+        if (Test-Path -LiteralPath $appLauncher) {
+            Get-CimInstance Win32_Process -Filter "name = 'python.exe' OR name = 'pythonw.exe'" -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.CommandLine -like "*http.server $AppPort*" -or
+                    ($_.CommandLine -like "*appshell_server.py*" -and $_.CommandLine -like "*--port $AppPort*")
+                } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Milliseconds 400
+            & $appLauncher -ProjectRoot $scriptDir -Port $AppPort -WindowStyle Hidden
+            $proxyOk = $false
+            foreach ($i in 1..20) {
+                try {
+                    $null = Invoke-RestMethod -Uri "http://127.0.0.1:$AppPort/v1/health" -TimeoutSec 2
+                    $proxyOk = $true
+                    break
+                } catch { Start-Sleep -Milliseconds 500 }
+            }
+            if ($proxyOk) {
+                Write-Host "[Setup] Control panel API proxy OK (http://127.0.0.1:$AppPort/v1 -> :$ApiPort)." -ForegroundColor Green
+                Write-Host "[Setup] In the browser set API Base to: http://127.0.0.1:$AppPort/v1 (or refresh if already open)." -ForegroundColor Cyan
+            } else {
+                Write-Host "[Setup] Warning: control panel proxy not ready — run acoulm again or set API Base to http://127.0.0.1:$ApiPort/v1" -ForegroundColor Yellow
+            }
         }
         Write-Host ""
         Write-Host "[Setup] Chat from terminal:" -ForegroundColor Cyan
