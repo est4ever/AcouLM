@@ -552,7 +552,7 @@ function Get-BackendLoadStatusLine {
         return $null
     }
     if (-not (Test-BackendProcessRunning)) {
-        return "  Backend stopped (${ElapsedSec}s) - see runlog.txt (often low VRAM / weak GPU during first GGUF compile)."
+        return "  Backend stopped (${ElapsedSec}s) - see runlog.txt or run .\start_app.ps1 -VisibleBackend."
     }
     if (Test-ApiHttpUp -TimeoutSec 15) {
         return "  Compiling model... ${ElapsedSec}s (first run; keep this window open)"
@@ -592,7 +592,8 @@ function Wait-BackendChatReady {
     $crashMsgShown = $false
 
     Write-Host ""
-    Write-Host "  Loading model (first run only; next acoulm is instant if backend stays up)..." -ForegroundColor Cyan
+    Write-Host "  OpenVINO is loading/compiling weights (not the AcouLM UI)..." -ForegroundColor Cyan
+    Write-Host "  First load can take 1-3 min (IR is usually faster than GGUF). Leave this window open until [ready]." -ForegroundColor DarkGray
     Write-Dim  "  Press Ctrl+C to cancel."
 
     while ((Get-Date) -lt $deadline) {
@@ -608,8 +609,8 @@ function Wait-BackendChatReady {
             if (-not $backendDeadSince) { $backendDeadSince = $now }
             if (-not $crashMsgShown -and ($now - $backendDeadSince).TotalSeconds -ge 8) {
                 Write-Host ""
-                Write-Host "  Backend exited during first compile (weak GPU / low VRAM is common on 3B GGUF)." -ForegroundColor Red
-                Write-Host "  Try a smaller model, export OpenVINO IR once, or set `$env:ACOULM_DEVICE='CPU' if you need stability." -ForegroundColor DarkYellow
+                Write-Host "  Backend process exited while loading (see runlog.txt or run .\start_app.ps1 -VisibleBackend)." -ForegroundColor Red
+                Write-Host "  On Intel iGPU laptops use CPU: `$env:ACOULM_DEVICE='CPU'; acoulm" -ForegroundColor DarkYellow
                 $crashMsgShown = $true
             }
             if (($now - $backendDeadSince).TotalSeconds -ge 25) {

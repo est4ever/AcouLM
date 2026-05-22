@@ -84,8 +84,8 @@ if (Test-Path -LiteralPath $modelsRoot) {
 
 # 2) Known HF checkpoint beside GGUF -> export once to IR
 $hfDirs = @(
-    (Join-Path $modelsRoot "Qwen2.5-3B-Instruct"),
-    (Join-Path $modelsRoot "Qwen2.5-0.5B-Instruct")
+    (Join-Path $modelsRoot "Qwen2.5-0.5B-Instruct"),
+    (Join-Path $modelsRoot "Qwen2.5-3B-Instruct")
 )
 $exportScript = Join-Path $ProjectRoot "Export-HfFolderToOpenVinoIR.ps1"
 $markerDir = Join-Path $ProjectRoot "registry"
@@ -159,6 +159,24 @@ foreach ($hfDir in $hfDirs) {
         Set-Content -LiteralPath $failMarker -Value $_.Exception.Message -Encoding UTF8
         Write-Host "[Fast] IR export failed: $($_.Exception.Message)" -ForegroundColor Yellow
     }
+}
+
+# 3) Selected model is GGUF-only — remind about IR (biggest snappy win)
+$regPath = Join-Path $ProjectRoot "registry\models_registry.json"
+if (Test-Path -LiteralPath $regPath) {
+    try {
+        $reg = Get-Content -LiteralPath $regPath -Raw | ConvertFrom-Json
+        $sel = [string]$reg.selected_model
+        foreach ($m in @($reg.models)) {
+            if ([string]$m.id -ne $sel) { continue }
+            $fmt = ([string]$m.format).Trim().ToLower()
+            if ($fmt -eq "gguf") {
+                Write-Host "[Fast] Selected model is GGUF — first launch compiles on device (slow on integrated GPU)." -ForegroundColor Yellow
+                Write-Host "[Fast] One-time fix: export OpenVINO IR (.\Export-HfFolderToOpenVinoIR.ps1 or portable_setup HF->IR), then acoulm picks *-ov-ir automatically." -ForegroundColor DarkGray
+            }
+            break
+        }
+    } catch {}
 }
 
 return $null

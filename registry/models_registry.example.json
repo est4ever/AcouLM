@@ -1,10 +1,11 @@
 {
   "schema": 1,
+  "auto_select_best_model": true,
   "selected_model": "openvino-local",
   "models": [
     {
       "id": "openvino-local",
-      "path": "./models/Qwen2.5-0.5B-Instruct",
+      "path": "./models/Qwen2.5-0.5B-Instruct-ov-ir",
       "format": "openvino",
       "backend": "openvino",
       "status": "ready"

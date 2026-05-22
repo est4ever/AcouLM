@@ -622,8 +622,8 @@ function Stop-AppShellServer {
 
     Get-CimInstance Win32_Process -Filter "name = 'python.exe' OR name = 'pythonw.exe'" |
         Where-Object {
-            $_.CommandLine -like "*http.server $Port*" -and
-            $_.CommandLine -like "*--directory app_shell*"
+            ($_.CommandLine -like "*http.server $Port*" -and $_.CommandLine -like "*app_shell*") -or
+            ($_.CommandLine -like "*appshell_server.py*" -and $_.CommandLine -like "*--port $Port*")
         } |
         ForEach-Object {
             Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
@@ -631,16 +631,12 @@ function Stop-AppShellServer {
 }
 
 function Start-AppShellHttpProcess {
-    $pythonExe = Join-Path $scriptDir "venv\Scripts\python.exe"
-    $pythonCmd = if (Test-Path $pythonExe) { "& '$pythonExe'" } else { "python" }
-    $appShellCmd = "Set-Location '$scriptDir'; $pythonCmd -m http.server $AppPort --directory app_shell"
-    $windowStyle = if ($HideServiceWindows) { "Hidden" } else { "Normal" }
-    $appShellArgs = if ($HideServiceWindows) {
-        @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $appShellCmd)
-    } else {
-        @("-NoExit", "-Command", $appShellCmd)
+    $launcher = Join-Path $scriptDir "scripts\Start-AppShellServer.ps1"
+    if (-not (Test-Path -LiteralPath $launcher)) {
+        throw "[App] Missing $launcher"
     }
-    Start-Process powershell -ArgumentList $appShellArgs -WindowStyle $windowStyle | Out-Null
+    $ws = if ($HideServiceWindows) { "Hidden" } else { "Normal" }
+    & $launcher -ProjectRoot $scriptDir -Port $AppPort -WindowStyle $ws
 }
 
 function Wait-AppShellTcpReady {
@@ -735,6 +731,21 @@ function Resolve-BackendDeviceOverride {
     $fromEnv = [string]$env:ACOULM_DEVICE
     if (Test-IsHardwareDevice -Value $fromEnv) {
         return $fromEnv.Trim().ToUpperInvariant()
+    }
+    $isGguf = $false
+    if (-not [string]::IsNullOrWhiteSpace($ModelFullPath)) {
+        if ($ModelFullPath -match '\.gguf$') {
+            $isGguf = $true
+        } elseif (Test-Path -LiteralPath $ModelFullPath -PathType Container) {
+            $ggufs = @(Get-ChildItem -LiteralPath $ModelFullPath -Filter '*.gguf' -File -ErrorAction SilentlyContinue)
+            $isGguf = $ggufs.Count -ge 1
+        }
+    }
+    if (Get-Command Get-AcouLMSnappyLaunchDevice -ErrorAction SilentlyContinue) {
+        $preferred = Get-AcouLMSnappyLaunchDevice -IsGguf:$isGguf
+        if (Test-IsHardwareDevice -Value $preferred) {
+            return $preferred.Trim().ToUpperInvariant()
+        }
     }
     return ""
 }
@@ -873,7 +884,23 @@ $apiBase = "http://localhost:$ApiPort/v1"
 $appReady = $false
 $didOpenBrowser = $false
 
-if (Test-ApiChatReady -Port $ApiPort) {
+$backendStale = $false
+$matchScript = Join-Path $scriptDir "scripts\Test-AcouLMBackendMatch.ps1"
+if (Test-Path -LiteralPath $matchScript) {
+    . $matchScript
+    $bm = Test-AcouLMBackendMatchesRegistry -ProjectRoot $scriptDir -ApiBase "http://127.0.0.1:$ApiPort"
+    if (-not $bm.Match) {
+        $backendStale = $true
+        Write-Host "[App] Stale backend: $($bm.Reason)" -ForegroundColor Yellow
+        Write-Host "[App] Reloading with registry model: $ModelPath" -ForegroundColor Cyan
+        Stop-BackendServer
+        $backendRunning = $false
+        $portBusy = $false
+        Start-Sleep -Milliseconds 800
+    }
+}
+
+if ((Test-ApiChatReady -Port $ApiPort) -and -not $backendStale) {
     Write-Host "[App] API already healthy on port $ApiPort - skipping backend restart." -ForegroundColor Green
     if ($SkipAppShell) {
         Write-Host "[App] Ready (API only)." -ForegroundColor Green
@@ -931,7 +958,7 @@ if (-not $SkipAppShell) {
     }
 }
 
-if (-not $backendRunning -and -not $portBusy) {
+if ($backendStale -or ((-not $backendRunning) -and (-not $portBusy))) {
     if ($backendFull) {
         Show-ModelScaleWarning -BackendFullPath $backendFull
     }

@@ -1,5 +1,7 @@
 # Getting started with AcouLM
 
+AcouLM is a **shell** (UI + CLI + API). Inference comes from a **backend** you register — built-in OpenVINO on Windows, or any **external** server that speaks the same HTTP API. Your users may have Intel-only laptops, AMD + NVIDIA desktops, or a CUDA cluster; the shell stays the same.
+
 | Platform | Maturity |
 |----------|----------|
 | **Windows** | Supported — recommended for new users |
@@ -10,8 +12,8 @@ Pick **one** path below. All paths assume you bring **your own model weights** (
 
 | You are… | Start here |
 |----------|------------|
-| **Windows — Intel GPU/NPU (built-in backend)** | [Windows — built-in backend](#windows--built-in-backend-openvino) |
-| **Windows — external backend (Ollama, custom server, etc.)** | [Windows — external backend](#windows--external-backend) |
+| **Windows — bundled reference backend (OpenVINO)** | [Windows — built-in backend](#windows--built-in-backend-openvino) |
+| **Windows — shell only (Ollama, llama.cpp, custom — any hardware)** | [Windows — external backend](#windows--external-backend) |
 | **Linux desktop or dev (experimental)** | [Linux](#linux-desktop--dev-experimental) |
 | **Linux cluster — NVIDIA CUDA (in development)** | [Linux cluster (CUDA)](#linux-cluster--cuda-gguf-in-development) |
 | **Just browsing the repo** | Clone → copy `registry/*.example.json` → read [README.md](README.md) |
@@ -33,6 +35,8 @@ Pick **one** path below. All paths assume you bring **your own model weights** (
 ---
 
 ## Windows — built-in backend (OpenVINO)
+
+**Backend note:** This path ships the **reference** OpenVINO runtime (`npu_wrapper`). It is one backend, not the product boundary — use [external backend](#windows--external-backend) if your users run CUDA-only stacks. OpenVINO discovers **CPU / GPU / NPU** at runtime; vendors vary by machine. `acoulm` picks a sensible default device from host hardware (discrete GPU → GPU; integrated-only + GGUF may default to CPU for faster first compile). Override with `acoulm gpu`, `acoulm cpu`, or `$env:ACOULM_DEVICE`.
 
 ### Option 1 — GitHub Release zip (easiest for end users)
 

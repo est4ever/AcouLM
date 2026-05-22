@@ -27,7 +27,15 @@ std::string resolve_cache_dir(const char* subdir) {
     return dir.string();
 }
 
+bool discrete_gpu_host() {
+    const char* tier = std::getenv("ACOULM_GPU_TIER");
+    return tier && tier[0] && std::string(tier) == "discrete";
+}
+
 bool weak_gpu_host() {
+    if (discrete_gpu_host()) {
+        return false;
+    }
     const char* tier = std::getenv("ACOULM_GPU_TIER");
     if (!tier || !tier[0]) {
         return false;

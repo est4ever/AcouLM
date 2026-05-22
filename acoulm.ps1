@@ -157,12 +157,10 @@ function Invoke-AutoTuneIfEnabled {
 
 function Start-AppShellOnlyHidden {
     param([int]$Port = 5173)
-    $pythonExe = Join-Path $scriptDir "venv\Scripts\python.exe"
-    $pythonCmd = if (Test-Path -LiteralPath $pythonExe) { "& '$pythonExe'" } else { "python" }
-    $appCmd = "Set-Location '$scriptDir'; $pythonCmd -m http.server $Port --directory app_shell"
-    try {
-        Start-Process -FilePath "powershell" -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $appCmd) -WindowStyle Hidden -ErrorAction Stop | Out-Null
-    } catch {}
+    $launcher = Join-Path $scriptDir "scripts\Start-AppShellServer.ps1"
+    if (Test-Path -LiteralPath $launcher) {
+        & $launcher -ProjectRoot $scriptDir -Port $Port -WindowStyle Hidden
+    }
 }
 
 function Open-ControlPanelUrl {
@@ -413,7 +411,10 @@ function Invoke-AutoTuneFastPreset {
         }
         if ($id -eq "NPU") { $hasNpu = $true }
     }
-    if ($env:ACOULM_GPU_TIER -eq "weak" -or $env:ACOULM_GPU_TIER -eq "integrated") {
+    $hostTier = [string]$env:ACOULM_GPU_TIER
+    if ($hostTier -eq "discrete") {
+        $gpuIntegrated = $false
+    } elseif ($hostTier -eq "integrated" -or $hostTier -eq "weak") {
         $gpuIntegrated = $true
     }
     if (-not $hasGpu) {
@@ -608,12 +609,79 @@ function Test-BackendProcessRunning {
     return $null -ne (Get-Process -Name "npu_wrapper" -ErrorAction SilentlyContinue | Select-Object -First 1)
 }
 
+function Get-RegistrySelectedModelMeta {
+    param([string]$ProjectRoot)
+    $rp = Join-Path $ProjectRoot "registry\models_registry.json"
+    if (-not (Test-Path -LiteralPath $rp)) { return $null }
+    try {
+        $reg = Get-Content -LiteralPath $rp -Raw | ConvertFrom-Json
+        $sel = [string]$reg.selected_model
+        foreach ($m in @($reg.models)) {
+            if ([string]$m.id -eq $sel) {
+                return [pscustomobject]@{
+                    Id     = $sel
+                    Path   = [string]$m.path
+                    Format = ([string]$m.format).Trim().ToLower()
+                }
+            }
+        }
+    } catch {}
+    return $null
+}
+
+function Resolve-SnappyStackLaunch {
+    param([string]$ProjectRoot)
+    $usePerf = $true
+    $device = ""
+    $meta = Get-RegistrySelectedModelMeta -ProjectRoot $ProjectRoot
+    $isGguf = $meta -and ($meta.Format -eq "gguf")
+
+    if (Get-Command Get-AcouLMSnappyLaunchDevice -ErrorAction SilentlyContinue) {
+        $device = Get-AcouLMSnappyLaunchDevice -IsGguf:$isGguf
+    } elseif ($env:ACOULM_DEVICE -match '^(CPU|GPU|NPU)$') {
+        $device = $env:ACOULM_DEVICE.Trim().ToUpperInvariant()
+    }
+
+    if ($device -eq "CPU" -and $isGguf) {
+        $usePerf = $false
+        Write-Host "[AcouLM] Snappy launch: GGUF on integrated GPU -> loading on CPU (faster compile). IR export = instant restarts." -ForegroundColor Cyan
+    } elseif ($device -eq "CPU") {
+        Write-Host "[AcouLM] Snappy launch: using CPU (stable on Intel iGPU laptops)." -ForegroundColor Cyan
+    } elseif ($device -eq "GPU") {
+        Write-Host "[AcouLM] Snappy launch: using GPU." -ForegroundColor Cyan
+    } elseif ([string]::IsNullOrWhiteSpace($device) -and -not $isGguf) {
+        Write-Host "[AcouLM] Snappy launch: OpenVINO picks device (PERFORMANCE policy)." -ForegroundColor DarkGray
+    }
+
+    return [pscustomobject]@{
+        Device          = $device
+        PerformanceMode = $usePerf
+        IsGguf          = [bool]$isGguf
+    }
+}
+
+function Test-AcouLMBackendStale {
+    $matchScript = Join-Path $scriptDir "scripts\Test-AcouLMBackendMatch.ps1"
+    if (-not (Test-Path -LiteralPath $matchScript)) { return $false }
+    . $matchScript
+    $bm = Test-AcouLMBackendMatchesRegistry -ProjectRoot $scriptDir
+    if (-not $bm.Match) {
+        Write-Host "[AcouLM] $($bm.Reason)" -ForegroundColor Yellow
+        Write-Host "[AcouLM] Restarting backend with the selected registry model (was a different/larger weights load)." -ForegroundColor Cyan
+        Get-Process -Name "npu_wrapper" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 600
+        return $true
+    }
+    return $false
+}
+
 function Ensure-AcouLMStackStarted {
     param(
         [switch]$PerformanceMode,
         [string]$DeviceOverride = "",
         [string[]]$StartAppExtraArgs = @()
     )
+    $null = Test-AcouLMBackendStale
     $apiChatReady = Test-ApiChatReady -Base $ApiBase
     $apiHttpUp = Test-ApiHttpUp -Base $ApiBase
     $backendRunning = Test-BackendProcessRunning
@@ -737,15 +805,37 @@ if ($hasExtraInvocation) {
 # Default: acoulm
 if (-not (Test-Path -LiteralPath $start)) { throw "Missing start_app.ps1 at $start" }
 
+$resolveScript = Join-Path $scriptDir "scripts\Resolve-AcouLMModel.ps1"
+$portableSetup = Join-Path $scriptDir "portable_setup.ps1"
+if (Test-Path -LiteralPath $resolveScript) {
+    $resolved = & $resolveScript -ProjectRoot $scriptDir
+    if (-not $resolved.Ok) {
+        if (-not (Test-Path -LiteralPath (Join-Path $scriptDir "registry\models_registry.json"))) {
+            Write-Host "[AcouLM] First time: need a small model (recommended Qwen2.5-0.5B)." -ForegroundColor Cyan
+        } else {
+            Write-Host "[AcouLM] No working model in registry — fixing or run setup." -ForegroundColor Yellow
+        }
+        if (Test-Path -LiteralPath $portableSetup) {
+            Write-Host "[AcouLM] Running one-time setup (download + IR). Press Enter for defaults." -ForegroundColor Cyan
+            & $portableSetup -NoLaunch
+            $resolved = & $resolveScript -ProjectRoot $scriptDir
+        }
+        if (-not $resolved.Ok) {
+            Write-Host "[AcouLM] Still no runnable model. Put OpenVINO IR or one .gguf under .\models\ then run acoulm again." -ForegroundColor Red
+            exit 1
+        }
+    }
+}
+
 $ensureFast = Join-Path $scriptDir "scripts\Ensure-FastModel.ps1"
 if (Test-Path -LiteralPath $ensureFast) {
     try {
         $null = & $ensureFast -ProjectRoot $scriptDir
         $irJob = Get-Job -Name "AcouLM-IR-*" -ErrorAction SilentlyContinue
         if (-not $irJob -and -not (Test-ApiChatReady -Base $ApiBase)) {
-            $hfDir = Join-Path $scriptDir "models\Qwen2.5-3B-Instruct"
-            $irDir = Join-Path $scriptDir "models\Qwen2.5-3B-Instruct-ov-ir"
-            if ((Test-Path -LiteralPath $hfDir) -and -not (Test-Path -LiteralPath $irDir)) {
+            $hf05 = Join-Path $scriptDir "models\Qwen2.5-0.5B-Instruct"
+            $ir05 = Join-Path $scriptDir "models\Qwen2.5-0.5B-Instruct-ov-ir"
+            if ((Test-Path -LiteralPath $hf05) -and -not (Test-Path -LiteralPath $ir05)) {
                 $null = & $ensureFast -ProjectRoot $scriptDir -BackgroundExportOnly
             }
         }
@@ -760,13 +850,22 @@ if ($snappyHot) {
     $ms = [int]$launchSw.ElapsedMilliseconds
     Write-Host "[AcouLM] Hot start (${ms}ms) - model already loaded." -ForegroundColor Green
 } else {
-    $null = Ensure-AcouLMStackStarted -PerformanceMode
+    $launchPrefs = Resolve-SnappyStackLaunch -ProjectRoot $scriptDir
+    $null = Ensure-AcouLMStackStarted -PerformanceMode:$launchPrefs.PerformanceMode -DeviceOverride $launchPrefs.Device
+    if ($launchPrefs.IsGguf -and -not (Test-ApiChatReady -Base $ApiBase)) {
+        Write-Host "[AcouLM] Waiting on OpenVINO GGUF compile (control panel is already up; chat when ready below)." -ForegroundColor DarkGray
+    }
     if (-not (Test-BackendProcessRunning)) {
         Write-Host "[AcouLM] Waiting for backend process..." -ForegroundColor Cyan
         $null = Wait-ForBackendProcess -TimeoutSec 90
     }
     if (Test-BackendProcessRunning) {
-        Write-Host "[AcouLM] Backend running - loading model (first compile can take several minutes on a weak GPU)..." -ForegroundColor Cyan
+        $tierHint = [string]$env:ACOULM_GPU_TIER
+        if ($tierHint -eq "discrete") {
+            Write-Host "[AcouLM] Backend running - loading model on discrete GPU (first GGUF compile may take a few minutes)..." -ForegroundColor Cyan
+        } else {
+            Write-Host "[AcouLM] Backend running - loading model (first compile can take several minutes on integrated GPU or CPU)..." -ForegroundColor Cyan
+        }
     } else {
         Write-Host "[AcouLM] Backend did not start - check hidden PowerShell or run .\start_app.ps1 -VisibleBackend" -ForegroundColor Yellow
     }

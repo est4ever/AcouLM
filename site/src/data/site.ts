@@ -100,7 +100,11 @@ export const faqs = [
   },
   {
     q: "Is AcouLM Windows-only?",
-    a: "Windows 10/11 is the supported product today (install.ps1, acoulm, OpenVINO backend). Linux and NVIDIA CUDA paths exist but are experimental or still in development — see README platform support and GETTING_STARTED.md.",
+    a: "Windows 10/11 is the main packaged path today. The shell and API are backend-agnostic; Linux and cluster scripts are experimental. Use an external backend for CUDA-only or non-OpenVINO stacks.",
+  },
+  {
+    q: "Does AcouLM require Intel hardware?",
+    a: "No. The shell runs anywhere your chosen backend runs. The bundled reference backend uses OpenVINO and supports common x64 CPUs and many GPUs; external backends cover NVIDIA CUDA, Ollama, and custom servers.",
   },
   {
     q: "install.ps1 download failed — what now?",

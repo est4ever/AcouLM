@@ -182,9 +182,11 @@ ov::AnyMap build_pipeline_config(const std::string& device, bool minimal_cpu, co
     } else if (device == "GPU") {
         pipeline_config["GPU_ENABLE_SDPA_OPTIMIZATION"] = true;
         pipeline_config["CACHE_DIR"] = resolve_cache_dir(device, model_path);
-        pipeline_config["NUM_STREAMS"] = 1;
+        // Do not set NUM_STREAMS on GPU — some OpenVINO iGPU builds reject integer 1 and fail load.
     } else if (device == "CPU") {
-        pipeline_config["NUM_STREAMS"] = 1;
+        if (!minimal_cpu) {
+            pipeline_config["NUM_STREAMS"] = std::string("1");
+        }
     }
 
     const char* perfMode = std::getenv("ACOULM_PERF_MODE");
