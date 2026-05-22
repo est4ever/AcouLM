@@ -1,5 +1,8 @@
 # Publishing NPU Companion (Browser + Terminal)
 
+**Before going public:** complete [PUBLISH_CHECKLIST.md](PUBLISH_CHECKLIST.md).  
+**End-user setup:** [GETTING_STARTED.md](GETTING_STARTED.md).
+
 This project is now distributed as a local browser control panel plus terminal chat workflow.
 
 ## Runtime Model

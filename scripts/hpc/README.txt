@@ -1,5 +1,6 @@
-AcouLM on a remote supercomputer (Linux + SLURM)
-===============================================
+AcouLM on a remote supercomputer (Linux + SLURM) — EXPERIMENTAL
+=============================================================
+CUDA (cuda-llama + GGUF) is IN DEVELOPMENT — not fully supported for all users.
 
 1) git clone https://github.com/est4ever/AcouLM.git && cd AcouLM
 
@@ -33,6 +34,7 @@ Notes
 - Never put conda sysroot libc on LD_LIBRARY_PATH (breaks bash/git).
 - Broken shell after bad LD_LIBRARY_PATH:  unset LD_LIBRARY_PATH;  env -i HOME=$HOME PATH=/usr/bin:/bin bash
 - Prefer OpenVINO IR folders over GGUF on HPC for faster loads.
-- API listens on 0.0.0.0:8000 inside the job (see RestAPIServer).
+- API defaults to 127.0.0.1:8000 (ACOULM_BIND_HOST). Use SSH tunnel; see SECURITY.md.
+- NVIDIA CUDA: bash scripts/hpc/configure_cuda_env.sh, source scripts/hpc/local_env.sh, acoulm (GGUF path required).
 - Windows scripts (acoulm.ps1, start_app.ps1) are not used on the cluster.
 - Keep the backend process alive for instant restarts; use the same node/port via SSH tunnel.
