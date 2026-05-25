@@ -22,13 +22,13 @@ Three parts:
 
 ## Demo
 
-**Screenshot** — the control panel after `acoulm` is ready: Workspace chat on the left, runtime chips (device, model, backend, routing flags), and the Control tab for registry and system settings.
+**Screenshot** — example of performance enhanced by using Acoulm
 
 <p align="center">
   <img src="docs/media/screenshot.jpg" alt="AcouLM control panel: local chat, runtime status, and model/device controls" width="720">
 </p>
 
-**Video** (~2 min, with audio) — end-to-end on Windows: setup, `acoulm` starting the stack, the control panel at `127.0.0.1`, and a local chat reply (no cloud).
+**Video** end-to-end on Windows: setup, `acoulm` starting the stack, the control panel at `127.0.0.1`, and a local chat reply (no cloud).
 
 https://github.com/user-attachments/assets/b8b1e929-edd7-49ae-8435-2d62cc517f63
 
@@ -46,7 +46,7 @@ https://github.com/user-attachments/assets/b8b1e929-edd7-49ae-8435-2d62cc517f63
 | **Linux (OpenVINO / SLURM)** | **Under development** — experimental scripts; expect rough edges |
 | **Linux + NVIDIA CUDA (GGUF)** | **Under development** — not a polished end-user path yet |
 
-For day-to-day use today, use **Windows**. Linux and CUDA flows are for contributors and custom deployments; the shell and API are the same, only the backend entrypoint changes.
+For day-to-day use today, use **Windows**. Linux and CUDA flows are still under development; the shell and API are the same, only the backend entrypoint changes.
 
 ## Windows quick start
 
@@ -69,15 +69,6 @@ First `acoulm setup` / `acoulm` may take a while (drivers, model path). If the U
 
 Shell-only (Ollama, llama.cpp, custom backend): `install.ps1 -ShellOnly` — details in [GETTING_STARTED.md — external backend](GETTING_STARTED.md#windows--external-backend).
 
-## Daily commands
-
-| Command | What it does |
-|---------|----------------|
-| `acoulm setup` | One-time: fix PATH, home folder, model/registry paths. |
-| `acoulm` | Start API + control panel; open http://127.0.0.1:5173 to chat. |
-| `acoulm cpu` | Force CPU inference (slower, works on 16 GB RAM or weak graphics). |
-| `acoulm stop` | Stop API and UI processes. |
-| `acoulm help` | List subcommands. |
 
 ## Backends at a glance
 
