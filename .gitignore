@@ -98,3 +98,7 @@ gitleaks-report*.sarif
 # Local export / SBOM output (user-generated)
 export/
 sbom/
+
+# Playwright profile for README video upload script
+.github-upload-profile/
+node_modules/
