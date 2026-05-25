@@ -22,9 +22,13 @@ You run one command (`acoulm`). AcouLM starts three pieces on your machine:
   <img src="docs/media/screenshot.jpg" alt="AcouLM control panel: local chat, runtime status, and model/device controls" width="720">
 </p>
 
-**Video** — end-to-end on Windows: setup, `acoulm` starting the stack, the control panel at `127.0.0.1`, and a local chat reply (no cloud). Plays inline below (with controls).
+**Video** — end-to-end on Windows: setup, `acoulm` starting the stack, the control panel at `127.0.0.1`, and a local chat reply (no cloud). Preview loops inline; **[full demo with audio (~2 min)](https://est4ever.github.io/AcouLM/demo.html)** opens in your browser with a normal video player (no download).
 
-https://github.com/est4ever/AcouLM/releases/download/_gh-attach-assets/demo-readme.mp4
+<p align="center">
+  <a href="https://est4ever.github.io/AcouLM/demo.html">
+    <img src="docs/media/demo.gif" alt="Demo: acoulm startup, control panel at 127.0.0.1, and local chat" width="720">
+  </a>
+</p>
 
 | Doc | Purpose |
 |-----|---------|
