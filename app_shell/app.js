@@ -1752,7 +1752,8 @@ if (window.__NPU_APP_SHELL_LOADED__) {
         body: JSON.stringify({ device: target }),
       });
       printJson(el("devicePolicyOutput"), result);
-      addActivity(`Device switched to ${result.new_active_device || target}`, "ready");
+      const pinnedNote = result.pinned ? " (pinned — routing will not override)" : "";
+      addActivity(`Device switched to ${result.new_active_device || target}${pinnedNote}`, "ready");
       const resolved = normalizeDevice(result.new_active_device || target || "");
       if (resolved && el("chatDeviceTarget")) {
         el("chatDeviceTarget").value = resolved === "AUTO" ? "AUTO" : resolved;

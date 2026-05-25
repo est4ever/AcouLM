@@ -21,6 +21,9 @@ struct RuntimeConfig {
     std::string performance_profile = "default";
     std::string performance_reason = "startup-default";
     mutable std::mutex profile_mutex;
+    // Set when user picks a device via /v1/cli/device/switch (blocks routing override).
+    mutable std::mutex pin_mutex;
+    std::string pinned_active_device;
     
     // Getters for atomic values
     bool get_json_mode() const { return json_mode.load(); }
@@ -53,6 +56,18 @@ struct RuntimeConfig {
     std::string get_performance_reason() const {
         std::lock_guard<std::mutex> lock(profile_mutex);
         return performance_reason;
+    }
+    void set_pinned_active_device(const std::string& device) {
+        std::lock_guard<std::mutex> lock(pin_mutex);
+        pinned_active_device = device;
+    }
+    void clear_pinned_active_device() {
+        std::lock_guard<std::mutex> lock(pin_mutex);
+        pinned_active_device.clear();
+    }
+    std::string get_pinned_active_device() const {
+        std::lock_guard<std::mutex> lock(pin_mutex);
+        return pinned_active_device;
     }
 };
 

@@ -1,4 +1,5 @@
 ﻿#include "BackendPool.h"
+#include <cctype>
 #include <iostream>
 #include <stdexcept>
 
@@ -80,11 +81,15 @@ void BackendPool::generate_stream(const std::string& prompt) {
 }
 
 void BackendPool::set_active_device(const std::string& device) {
-    if (backends.find(device) != backends.end()) {
-        current_device = device;
-        std::cout << "[BackendPool] Switched to device: " << device << "\n";
+    std::string key = device;
+    for (char& c : key) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    if (backends.find(key) != backends.end()) {
+        current_device = key;
+        std::cout << "[BackendPool] Switched to device: " << key << "\n";
     } else {
-        std::cerr << "[BackendPool] Error: Device " << device << " not loaded\n";
+        std::cerr << "[BackendPool] Error: Device " << key << " not loaded\n";
     }
 }
 

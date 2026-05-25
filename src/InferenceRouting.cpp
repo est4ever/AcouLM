@@ -143,14 +143,21 @@ bool apply_inference_routing(
         return false;
     }
 
+    const std::string previous = pool->get_active_device();
+    const std::string pinned = config->get_pinned_active_device();
+    if (!pinned.empty()) {
+        if (try_activate_device(pool, pinned)) {
+            return pool->get_active_device() != previous;
+        }
+        config->clear_pinned_active_device();
+    }
+
     const auto loaded = pool->get_loaded_devices();
     const bool want_context = config->get_context_routing() && scheduler && loaded.size() > 1;
     const bool want_split = config->get_split_prefill() && loaded.size() >= 2;
     if (!want_context && !want_split) {
         return false;
     }
-
-    const std::string previous = pool->get_active_device();
 
     if (want_context) {
         const size_t estimated_tokens = OpenVINOScheduler::estimate_token_count(prompt);

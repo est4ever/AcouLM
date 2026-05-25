@@ -1797,7 +1797,40 @@ void RestAPIServer::handle_cli_device_switch(const httplib::Request& req, httpli
             set_error_response(res, 400, "missing_device", "device parameter required");
             return;
         }
-        
+
+        std::transform(device.begin(), device.end(), device.begin(), ::toupper);
+        if (device != "CPU" && device != "GPU" && device != "NPU") {
+            set_error_response(res, 400, "invalid_device", "device must be CPU, GPU, or NPU");
+            return;
+        }
+
+        bool already_loaded = false;
+        for (const auto& loaded : backend_pool_->get_loaded_devices()) {
+            if (loaded == device) {
+                already_loaded = true;
+                break;
+            }
+        }
+        if (!already_loaded) {
+            std::string load_error;
+            if (!backend_pool_->load_device(device, load_error)) {
+                const json available = probe_available_devices();
+                set_error_response(
+                    res,
+                    422,
+                    "device_load_failed",
+                    "Device " + device + " is not loaded: " + load_error,
+                    json{
+                        {"requested_device", device},
+                        {"loaded_devices", backend_pool_->get_loaded_devices()},
+                        {"available_devices", available},
+                        {"hints", build_device_load_hints(device, load_error, available)}
+                    }
+                );
+                return;
+            }
+        }
+
         backend_pool_->set_active_device(device);
         std::string actual_device = backend_pool_->get_active_device();
 
@@ -1807,8 +1840,11 @@ void RestAPIServer::handle_cli_device_switch(const httplib::Request& req, httpli
             return;
         }
 
+        config_->set_pinned_active_device(device);
+
         json response = {
             {"new_active_device", actual_device},
+            {"pinned", true},
             {"success", true}
         };
 
