@@ -71,6 +71,24 @@ const std::filesystem::path& launch_state_path() {
     return path;
 }
 
+bool is_path_under_project(const std::filesystem::path& resolved) {
+    if (resolved.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    const auto root = std::filesystem::weakly_canonical(project_root_path(), ec);
+    const auto target = std::filesystem::weakly_canonical(resolved, ec);
+    if (ec) {
+        return false;
+    }
+    const auto rel = std::filesystem::relative(target, root, ec);
+    if (ec || rel.empty()) {
+        return !ec;
+    }
+    const std::string rel_s = rel.generic_string();
+    return rel_s != ".." && rel_s.rfind("../", 0) != 0;
+}
+
 const std::filesystem::path& restart_script_path() {
 #ifdef _WIN32
     static const std::filesystem::path path = project_root_path() / "restart_backend.ps1";
@@ -607,7 +625,15 @@ std::filesystem::path resolve_registry_model_path(const std::string& model_path_
     if (p.is_relative()) {
         p = project_root_path() / p;
     }
-    return p.lexically_normal();
+    std::error_code ec;
+    p = std::filesystem::weakly_canonical(p, ec);
+    if (ec) {
+        p = p.lexically_normal();
+    }
+    if (!is_path_under_project(p)) {
+        return {};
+    }
+    return p;
 }
 
 json visible_models_registry(json reg) {
@@ -2224,6 +2250,18 @@ void RestAPIServer::handle_cli_model_import(const httplib::Request& req, httplib
                 "missing_required_fields",
                 "id and path are required",
                 json{{"required", json::array({"id", "path"})}}
+            );
+            return;
+        }
+
+        const auto resolved_import = resolve_registry_model_path(path);
+        if (resolved_import.empty()) {
+            set_error_response(
+                res,
+                400,
+                "path_outside_project",
+                "Model path must resolve inside the AcouLM project directory (use ./models/... or a relative path).",
+                json{{"path", path}, {"project_root", project_root_path().string()}}
             );
             return;
         }

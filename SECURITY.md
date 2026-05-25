@@ -47,6 +47,10 @@ Authorization: Bearer <your-token>
 
 **Never** commit `ACOULM_API_TOKEN` or put it in `local_env.sh` in git.
 
+## Model paths
+
+Registry `path` values must resolve **inside the AcouLM project folder** (no `..\..\` escapes or arbitrary `C:\...` paths via the API). Keep weights under `./models/` when possible.
+
 ## What the API allows
 
 | Route | Localhost | Remote without token | Remote with `ACOULM_API_TOKEN` |

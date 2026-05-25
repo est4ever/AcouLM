@@ -9,9 +9,9 @@ useDefault = true
 [allowlist]
 description = "False positives: UI prefs key + local model trees (never commit models/)."
 regexes = [
-  # localStorage key for app shell prefs — not a credential
-  '''acoulm\.ui\.prefs\.v1''',
-  '''const\s+PREFS_KEY\s*=\s*"acoulm\.ui\.prefs\.v1"''',
+  # localStorage key for app shell prefs — not a credential (includes pre-rename "loomis" history)
+  '''\w+\.ui\.prefs\.v1''',
+  '''const\s+PREFS_KEY\s*=\s*"[a-z]+\.ui\.prefs\.v1"''',
 ]
 paths = [
   # OpenVINO IR/tokenizer XML under models/ triggers generic-api-key on version attrs; models/ is gitignored.
