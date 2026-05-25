@@ -132,7 +132,7 @@ function Start-StackHidden {
     }
 
     try {
-        Start-Process -FilePath "powershell" -ArgumentList $args -WindowStyle Hidden -ErrorAction Stop | Out-Null
+        Start-Process -FilePath "powershell" -ArgumentList $args -WorkingDirectory $scriptDir -WindowStyle Hidden -ErrorAction Stop | Out-Null
     } catch {
         $hb = $HideServiceWindows -and -not $VisibleBackend
         $sp = @{
@@ -642,11 +642,13 @@ function Resolve-SnappyStackLaunch {
         $device = $env:ACOULM_DEVICE.Trim().ToUpperInvariant()
     }
 
-    if ($device -eq "CPU" -and $isGguf) {
+    if ($device -eq "CPU") {
         $usePerf = $false
-        Write-Host "[AcouLM] Snappy launch: GGUF on integrated GPU -> loading on CPU (faster compile). IR export = instant restarts." -ForegroundColor Cyan
-    } elseif ($device -eq "CPU") {
-        Write-Host "[AcouLM] Snappy launch: using CPU (stable on Intel iGPU laptops)." -ForegroundColor Cyan
+        if ($isGguf) {
+            Write-Host "[AcouLM] Snappy launch: GGUF on integrated GPU -> loading on CPU (faster compile). IR export = instant restarts." -ForegroundColor Cyan
+        } else {
+            Write-Host "[AcouLM] Snappy launch: using CPU (stable on Intel iGPU laptops)." -ForegroundColor Cyan
+        }
     } elseif ($device -eq "GPU") {
         Write-Host "[AcouLM] Snappy launch: using GPU." -ForegroundColor Cyan
     } elseif ([string]::IsNullOrWhiteSpace($device) -and -not $isGguf) {
@@ -665,14 +667,46 @@ function Test-AcouLMBackendStale {
     if (-not (Test-Path -LiteralPath $matchScript)) { return $false }
     . $matchScript
     $bm = Test-AcouLMBackendMatchesRegistry -ProjectRoot $scriptDir
-    if (-not $bm.Match) {
-        Write-Host "[AcouLM] $($bm.Reason)" -ForegroundColor Yellow
-        Write-Host "[AcouLM] Restarting backend with the selected registry model (was a different/larger weights load)." -ForegroundColor Cyan
-        Get-Process -Name "npu_wrapper" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Milliseconds 600
-        return $true
+    if ($bm.Match) { return $false }
+    if ($bm.Reason -eq "api-unreachable" -or $bm.Reason -eq "still-loading") {
+        return $false
     }
-    return $false
+    Write-Host "[AcouLM] $($bm.Reason)" -ForegroundColor Yellow
+    Write-Host "[AcouLM] Restarting backend with the selected registry model (was a different/larger weights load)." -ForegroundColor Cyan
+    Get-Process -Name "npu_wrapper" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 600
+    return $true
+}
+
+function Start-BackendHostHidden {
+    param(
+        [string]$ModelPath,
+        [string]$DeviceOverride = "",
+        [switch]$PerformanceMode
+    )
+    $hostScript = Join-Path $scriptDir "scripts\Start-AcouLMBackend.ps1"
+    if (-not (Test-Path -LiteralPath $hostScript)) {
+        throw "Missing backend host script: $hostScript"
+    }
+    $psArgs = @(
+        "-NoExit",
+        "-NoProfile",
+        "-ExecutionPolicy", "Bypass",
+        "-File", $hostScript,
+        "-Model", $ModelPath,
+        "-Port", "8000"
+    )
+    if ($DeviceOverride -match '^(CPU|GPU|NPU)$') {
+        $psArgs += @("-Device", $DeviceOverride.Trim().ToUpperInvariant())
+    }
+    if ($PerformanceMode) {
+        $psArgs += @("-ExtraArgs", "--policy", "PERFORMANCE")
+    }
+    Start-Process -FilePath "powershell" `
+        -ArgumentList $psArgs `
+        -WorkingDirectory $scriptDir `
+        -WindowStyle Hidden `
+        -ErrorAction Stop | Out-Null
 }
 
 function Ensure-AcouLMStackStarted {
@@ -707,23 +741,14 @@ function Ensure-AcouLMStackStarted {
         return $false
     }
 
+    $meta = Get-RegistrySelectedModelMeta -ProjectRoot $scriptDir
+    $modelPath = if ($meta -and $meta.Path) { $meta.Path } else { "./models" }
+    Write-Host "[AcouLM] Starting backend (direct launch)..." -ForegroundColor Cyan
+    Start-BackendHostHidden -ModelPath $modelPath -DeviceOverride $DeviceOverride -PerformanceMode:$PerformanceMode
     if (-not $appShellReady) {
-        Write-Host "[AcouLM] Starting API in background (control panel loads in parallel)..." -ForegroundColor Cyan
-        $env:ACOULM_TERMINAL_ONLY = "1"
-        Start-StackHidden -TimeoutSeconds $defaultStartupTimeoutSeconds -SkipAppShell `
-            -HideServiceWindows -PerformanceMode:$PerformanceMode -DeviceOverride $DeviceOverride `
-            -StartAppExtraArgs $StartAppExtraArgs
         Start-AppShellOnlyHidden -Port 5173
-        $started = $true
-    } else {
-        Write-Host "[AcouLM] Starting API (control panel already on :5173)..." -ForegroundColor Cyan
-        $env:ACOULM_TERMINAL_ONLY = "1"
-        Start-StackHidden -TimeoutSeconds $defaultStartupTimeoutSeconds -SkipAppShell `
-            -HideServiceWindows -PerformanceMode:$PerformanceMode -DeviceOverride $DeviceOverride `
-            -StartAppExtraArgs $StartAppExtraArgs
-        $started = $true
     }
-    return $started
+    return $true
 }
 
 function Start-AcouLMBrowserWhenReady {

@@ -287,7 +287,7 @@ User: "Talk about machine learning"
 # Should use GPU now
 ```
 
-If only one device is loaded, `split-prefill on` is expected to fail with `insufficient_devices`.
+With one device loaded, enabling `split-prefill` in the UI hot-loads a second device (GPU+CPU on typical Intel laptops). Fails with `insufficient_devices` only if that load fails (often low RAM).
 
 ### Test 3: No Commands in Chat
 

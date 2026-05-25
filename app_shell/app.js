@@ -1820,7 +1820,7 @@ if (window.__NPU_APP_SHELL_LOADED__) {
 
   const FEATURE_ERROR_HINTS = {
     insufficient_devices:
-      "Requires >=2 loaded devices. Launch backend with --benchmark to load all available devices.",
+      "Could not load a second device (needs ~2x model RAM). Wait until chat_ready, then retry. On 16GB machines prefer Memory Safe preset.",
   };
 
   function friendlyFeatureError(feature, err) {

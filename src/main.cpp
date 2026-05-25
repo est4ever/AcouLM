@@ -1114,13 +1114,8 @@ int main(int argc, char** argv) {
                 server_config.set_policy(policy);
                 server_config.set_performance_profile(profile_for_policy(policy), "policy-selected");
                 server_config.set_json_mode(json_mode);
-                {
-                    const char* snappy = std::getenv("ACOULM_SNAPPY");
-                    if (!snappy || snappy[0] != '0') {
-                        split_prefill = false;
-                        context_routing = false;
-                    }
-                }
+                // Snappy keeps single-device cold start (devices_to_test below); do not clear
+                // split-prefill/context-routing flags — user can enable them at runtime via API/UI.
                 server_config.set_split_prefill(split_prefill);
                 server_config.set_context_routing(context_routing);
                 server_config.set_enable_kv_paging(enable_kv_paging);
@@ -1387,13 +1382,6 @@ int main(int argc, char** argv) {
                 server_config.set_policy(policy);
                 server_config.set_performance_profile(profile_for_policy(policy), "policy-selected");
                 server_config.set_json_mode(json_mode);
-                {
-                    const char* snappy = std::getenv("ACOULM_SNAPPY");
-                    if (!snappy || snappy[0] != '0') {
-                        split_prefill = false;
-                        context_routing = false;
-                    }
-                }
                 server_config.set_split_prefill(split_prefill);
                 server_config.set_context_routing(context_routing);
                 server_config.set_enable_kv_paging(enable_kv_paging);
