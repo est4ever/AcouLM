@@ -46,11 +46,40 @@ if (Test-Path -LiteralPath $dist) {
         Set-Content (Join-Path $work "dist-files.txt") -Encoding UTF8
 }
 
+# Status snapshot for support (no secrets)
+try {
+    $health = Invoke-RestMethod -Uri "http://127.0.0.1:8000/v1/health" -Method Get -TimeoutSec 3 -ErrorAction Stop
+    ($health | ConvertTo-Json -Depth 6) | Set-Content (Join-Path $work "health-snapshot.json") -Encoding UTF8
+} catch {
+    "health unreachable: $($_.Exception.Message)" | Set-Content (Join-Path $work "health-snapshot.txt") -Encoding UTF8
+}
+try {
+    $st = Invoke-RestMethod -Uri "http://127.0.0.1:8000/v1/cli/status" -Method Get -TimeoutSec 3 -ErrorAction Stop
+    ($st | ConvertTo-Json -Depth 6) | Set-Content (Join-Path $work "cli-status-snapshot.json") -Encoding UTF8
+} catch {
+    "cli status unreachable: $($_.Exception.Message)" | Set-Content (Join-Path $work "cli-status-snapshot.txt") -Encoding UTF8
+}
+
+$runlog = Join-Path $ProjectRoot "runlog.txt"
+if (Test-Path -LiteralPath $runlog) {
+    Get-Content -LiteralPath $runlog -Tail 120 -ErrorAction SilentlyContinue |
+        ForEach-Object { Redact-Path $_ } |
+        Set-Content (Join-Path $work "runlog-tail.txt") -Encoding UTF8
+}
+
 $zipName = "acoulm-diagnostics-$stamp.zip"
 $zipPath = Join-Path $exportDir $zipName
 if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+$items = @(Get-ChildItem -LiteralPath $work -Force -ErrorAction SilentlyContinue)
+if ($items.Count -eq 0) {
+    "AcouLM diagnostics export (no optional files found)" | Set-Content (Join-Path $work "README.txt") -Encoding UTF8
+}
 Compress-Archive -Path (Join-Path $work "*") -DestinationPath $zipPath -Force
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+
+if (-not (Test-Path -LiteralPath $zipPath)) {
+    throw "Compress-Archive did not create $zipPath"
+}
 
 $marker = Join-Path $exportDir "last-export.txt"
 $zipPath | Set-Content -LiteralPath $marker -Encoding ASCII

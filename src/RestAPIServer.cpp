@@ -2940,32 +2940,59 @@ void RestAPIServer::handle_cli_diagnostics_export(const httplib::Request&, httpl
                 res,
                 501,
                 "export_script_missing",
-                "Diagnostics export is only available on Windows (Export-Diagnostics.ps1)."
+                "Diagnostics export is only available on Windows (Export-Diagnostics.ps1).",
+                json{{"project_root", root.string()}}
             );
             return;
         }
-#ifdef _WIN32
-        const std::string cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"" + script.string() + "\"";
-        const int r = std::system(cmd.c_str());
-        (void)r;
-#else
+#ifndef _WIN32
         set_error_response(res, 501, "export_unsupported", "Diagnostics export is only available on Windows.");
         return;
-#endif
-        const std::filesystem::path marker = root / "export" / "last-export.txt";
+#else
+        const std::filesystem::path export_dir = root / "export";
+        std::error_code ec;
+        std::filesystem::create_directories(export_dir, ec);
+
+        const std::string root_arg = root.string();
+        const std::string script_arg = script.string();
+        const std::string cmd =
+            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \""
+            + script_arg + "\" -ProjectRoot \"" + root_arg + "\"";
+
+        const int exit_code = std::system(cmd.c_str());
+        const std::filesystem::path marker = export_dir / "last-export.txt";
         if (!std::filesystem::exists(marker)) {
             set_error_response(
                 res,
                 500,
                 "export_failed",
-                "Diagnostics export did not produce export/last-export.txt. Run .\\Export-Diagnostics.ps1 manually."
+                "Diagnostics export did not produce export/last-export.txt. Run .\\Export-Diagnostics.ps1 manually.",
+                json{
+                    {"exit_code", exit_code},
+                    {"project_root", root_arg},
+                    {"command", cmd}
+                }
             );
             return;
         }
         std::ifstream fin(marker.string());
-        std::string p;
-        std::getline(fin, p);
-        set_json_response(res, { {"success", true}, {"zip_path", p} });
+        std::string zip_path;
+        std::getline(fin, zip_path);
+        while (!zip_path.empty() && (zip_path.back() == '\r' || zip_path.back() == '\n' || zip_path.back() == ' ')) {
+            zip_path.pop_back();
+        }
+        std::uintmax_t zip_bytes = 0;
+        if (!zip_path.empty() && std::filesystem::exists(zip_path)) {
+            zip_bytes = std::filesystem::file_size(zip_path);
+        }
+        set_json_response(res, {
+            {"success", true},
+            {"zip_path", zip_path},
+            {"zip_bytes", zip_bytes},
+            {"exit_code", exit_code},
+            {"project_root", root_arg}
+        });
+#endif
     } catch (const std::exception& e) {
         set_error_response(res, 500, "export_exception", e.what());
     }

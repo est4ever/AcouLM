@@ -3197,10 +3197,17 @@ if (window.__NPU_APP_SHELL_LOADED__) {
     }
   }
 
+  const DIAG_EXPORT_TIMEOUT_MS = 120000;
+
   async function exportDiagnosticsZip() {
     try {
-      setButtonBusy("btnExportDiag", true);
-      const d = await requestJson("/cli/diagnostics/export", { method: "POST", body: "{}" });
+      setButtonBusy("btnExportDiag", true, "Exporting...");
+      addActivity("Building diagnostics zip (may take 10–30s)...", "busy");
+      const d = await requestJson("/cli/diagnostics/export", {
+        method: "POST",
+        body: "{}",
+        timeoutMs: DIAG_EXPORT_TIMEOUT_MS,
+      });
       addActivity(
         d.zip_path
           ? `Diagnostics zip: ${d.zip_path}`
