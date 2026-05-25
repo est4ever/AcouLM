@@ -4,15 +4,21 @@
 
 ## What is AcouLM?
 
-AcouLM is a **local AI control plane** for running language models on your own PC — not a cloud chat app.
+AcouLM runs **your own** language model on **your PC** — like a local ChatGPT stack you control. It is not a cloud service: you install it, point it at a model file you already have (or download separately), then chat in a browser or terminal. Nothing goes to AcouLM’s servers.
 
-You run one command (`acoulm`). AcouLM starts three pieces on your machine:
+**How it works (short):** install once → `acoulm setup` registers your model path and tools → `acoulm` starts a small local server plus a web UI → you type in the UI (or CLI); the server loads the model and returns replies on `127.0.0.1` only.
 
-1. **Backend API** (`http://127.0.0.1:8000/v1`) — loads your model and runs inference (built-in OpenVINO runtime, or an external server you register).
-2. **Browser control panel** (`http://127.0.0.1:5173`) — chat UI, model/backend registry, device switch (CPU/GPU/NPU), and optional routing features (split-prefill, context-routing).
-3. **Terminal chat** — same API from PowerShell for quick prompts without opening the browser.
+Three parts:
 
-**Nothing is sent to AcouLM’s servers.** Prompts and weights stay local unless *you* point the API at a remote backend. The repo does not ship model files; you download or point to your own OpenVINO IR or GGUF.
+| Part | What it does |
+|------|----------------|
+| **Backend API** (`http://127.0.0.1:8000/v1`) | Loads the model and runs generation. Uses the built-in OpenVINO engine, or forwards to Ollama / llama.cpp if you configured that. |
+| **Control panel** (`http://127.0.0.1:5173`) | Web chat and settings: pick model, CPU/GPU/NPU, which backend is active, registry paths. |
+| **Terminal chat** | Same API from PowerShell when you do not want the browser open. |
+
+**Models:** this repo does **not** include weights. You supply OpenVINO IR or a supported GGUF file (see [GETTING_STARTED.md](GETTING_STARTED.md)).
+
+**New here?** Install, drivers, first model: [GETTING_STARTED.md](GETTING_STARTED.md).
 
 ## Demo
 
@@ -22,11 +28,9 @@ You run one command (`acoulm`). AcouLM starts three pieces on your machine:
   <img src="docs/media/screenshot.jpg" alt="AcouLM control panel: local chat, runtime status, and model/device controls" width="720">
 </p>
 
-**Video** — end-to-end on Windows: setup, `acoulm` starting the stack, the control panel at `127.0.0.1`, and a local chat reply (no cloud). Plays inline below (with controls).
+**Video** (~2 min, with audio) — end-to-end on Windows: setup, `acoulm` starting the stack, the control panel at `127.0.0.1`, and a local chat reply (no cloud).
 
 https://github.com/user-attachments/assets/b8b1e929-edd7-49ae-8435-2d62cc517f63
-
-
 
 | Doc | Purpose |
 |-----|---------|
@@ -46,7 +50,9 @@ For day-to-day use today, use **Windows**. Linux and CUDA flows are for contribu
 
 ## Windows quick start
 
-Requires [Git for Windows](https://git-scm.com/download/win) and a [GitHub Release](https://github.com/est4ever/AcouLM/releases) asset **`acoulm-dist-windows-x64.zip`** (or build from source — see [GETTING_STARTED.md](GETTING_STARTED.md)).
+**Requirements:** Windows 10/11 x64, **16 GB+ RAM** recommended, and a model you provide (OpenVINO IR or GGUF — not bundled). Needs [Git for Windows](https://git-scm.com/download/win) and **`acoulm-dist-windows-x64.zip`** ([Releases](https://github.com/est4ever/AcouLM/releases)), or build from source.
+
+**What each step does:** `install.ps1` clones the repo; `portable_setup.ps1` unpacks the release zip; `acoulm setup` wires PATH and asks for your model; `acoulm` starts API + UI.
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create((irm 'https://raw.githubusercontent.com/est4ever/AcouLM/main/install.ps1' -UseBasicParsing)))"
@@ -59,26 +65,26 @@ acoulm
 - Control panel: http://127.0.0.1:5173  
 - API: http://127.0.0.1:8000/v1  
 
+First `acoulm setup` / `acoulm` may take a while (drivers, model path). If the UI does not load, see [GETTING_STARTED.md](GETTING_STARTED.md).
+
 Shell-only (Ollama, llama.cpp, custom backend): `install.ps1 -ShellOnly` — details in [GETTING_STARTED.md — external backend](GETTING_STARTED.md#windows--external-backend).
 
 ## Daily commands
 
-| Task | Command |
-|------|---------|
-| UI + API + chat | `acoulm` |
-| One-time PATH / home | `acoulm setup` |
-| CPU-only (16 GB RAM / weak iGPU) | `acoulm cpu` |
-| Stop stack | `acoulm stop` |
-| Help | `acoulm help` |
-
-Model weights are **not** in this repo. Built-in backend wants **OpenVINO IR** or a **single supported `.gguf`**; raw Hugging Face `.safetensors` must be exported first (setup can help). See [GETTING_STARTED.md](GETTING_STARTED.md) and [Model formats](GETTING_STARTED.md#before-you-run-anything).
+| Command | What it does |
+|---------|----------------|
+| `acoulm setup` | One-time: fix PATH, home folder, model/registry paths. |
+| `acoulm` | Start API + control panel; open http://127.0.0.1:5173 to chat. |
+| `acoulm cpu` | Force CPU inference (slower, works on 16 GB RAM or weak graphics). |
+| `acoulm stop` | Stop API and UI processes. |
+| `acoulm help` | List subcommands. |
 
 ## Backends at a glance
 
-| Backend | Role |
-|---------|------|
-| **Built-in** (`npu_wrapper`, OpenVINO GenAI) | Shipped in release zip or `build.ps1` — CPU / GPU / NPU when OpenVINO finds devices |
-| **External** (`registry/backends_registry.json`) | Your server (Ollama, llama.cpp CUDA, custom) — any hardware the server supports |
+| Backend | What it means |
+|---------|----------------|
+| **Built-in** | AcouLM’s own OpenVINO runner in the zip — uses CPU, GPU, or Intel NPU on your machine. |
+| **External** | You run Ollama, llama.cpp, etc.; AcouLM only sends chat to that server (good for NVIDIA CUDA or custom setups). |
 
 ## More documentation
 
