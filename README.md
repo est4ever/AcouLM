@@ -2,17 +2,33 @@
 
 🌐 **Website:** https://est4ever.github.io/AcouLM/
 
-**Local AI shell** — browser control panel, `acoulm` terminal chat, and one HTTP API (`/v1/*`). Models stay on your machine; you pick the backend (built-in OpenVINO or any external server that speaks the API).
+## What is AcouLM?
+
+AcouLM is a **local AI control plane** for running language models on your own PC — not a cloud chat app.
+
+You run one command (`acoulm`). AcouLM starts three pieces on your machine:
+
+1. **Backend API** (`http://127.0.0.1:8000/v1`) — loads your model and runs inference (built-in OpenVINO runtime, or an external server you register).
+2. **Browser control panel** (`http://127.0.0.1:5173`) — chat UI, model/backend registry, device switch (CPU/GPU/NPU), and optional routing features (split-prefill, context-routing).
+3. **Terminal chat** — same API from PowerShell for quick prompts without opening the browser.
+
+**Nothing is sent to AcouLM’s servers.** Prompts and weights stay local unless *you* point the API at a remote backend. The repo does not ship model files; you download or point to your own OpenVINO IR or GGUF.
+
+## Demo
+
+**Screenshot** — the control panel after `acoulm` is ready: Workspace chat on the left, runtime chips (device, model, backend, routing flags), and the Control tab for registry and system settings.
 
 <p align="center">
-  <img src="docs/media/screenshot.jpg" alt="AcouLM control panel" width="720">
+  <img src="docs/media/screenshot.jpg" alt="AcouLM control panel: local chat, runtime status, and model/device controls" width="720">
 </p>
 
-<p align="center">
-  <video src="docs/media/demo.mp4" controls width="720">
-    <a href="docs/media/demo.mp4">Watch demo (MP4)</a>
-  </video>
-</p>
+**Video** (~19 MB) — end-to-end on Windows: setup, `acoulm` starting the stack, the control panel connecting to `127.0.0.1`, and a local chat reply (no cloud).
+
+GitHub does not play MP4s inside the README body; open the file to watch:
+
+**[▶ Watch demo video — `docs/media/demo.mp4`](docs/media/demo.mp4)**
+
+After you push to `main`, the same file is also here: https://github.com/est4ever/AcouLM/blob/main/docs/media/demo.mp4
 
 | Doc | Purpose |
 |-----|---------|
