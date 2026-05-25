@@ -74,9 +74,17 @@ void ensure_split_prefill_device_names(
         decode = is_device_available(available, "NPU") ? "NPU"
             : (is_device_available(available, "GPU") ? "GPU" : loaded.front());
     }
-    if (prefill == decode && is_device_available(available, "GPU") && is_device_available(available, "NPU")) {
-        prefill = "GPU";
-        decode = "NPU";
+    if (prefill == decode) {
+        if (is_device_available(available, "GPU") && is_device_available(available, "NPU")) {
+            prefill = "GPU";
+            decode = "NPU";
+        } else if (is_device_available(available, "GPU") && is_device_available(available, "CPU")) {
+            prefill = "GPU";
+            decode = "CPU";
+        } else if (is_device_available(available, "CPU") && is_device_available(available, "NPU")) {
+            prefill = "CPU";
+            decode = "NPU";
+        }
     }
 
     config->prefill_device = prefill;
@@ -94,15 +102,11 @@ bool ensure_split_prefill_devices_loaded(
         return false;
     }
 
+    // Runtime enable (API/UI) may hot-load a second device. ACOULM_ALLOW_MULTI_DEVICE=0 only blocks
+    // automatic multi-device startup in launchers — not an explicit user toggle here.
     const char* allow = std::getenv("ACOULM_ALLOW_MULTI_DEVICE");
-    if (!allow || std::string(allow) != "1") {
-        const auto already = pool->get_loaded_devices();
-        if (already.size() >= 1) {
-            error_out =
-                "split-prefill needs a second device load; disabled by default to avoid duplicate model RAM. "
-                "Set ACOULM_ALLOW_MULTI_DEVICE=1 and restart, or use a single device (acoulm cpu / --device CPU).";
-            return false;
-        }
+    if ((!allow || std::string(allow) != "1") && routing_verbose()) {
+        std::cout << "[Routing] Hot-loading second device for split-prefill (duplicate model RAM).\n";
     }
 
     ensure_split_prefill_device_names(config, scheduler, pool);

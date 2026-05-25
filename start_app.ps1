@@ -808,7 +808,7 @@ function Start-BackendServer {
     }
 
     $windowStyle = if ($HideWindow) { "Hidden" } else { "Normal" }
-    Start-Process -FilePath "powershell" -ArgumentList $psArgs -WindowStyle $windowStyle | Out-Null
+    Start-Process -FilePath "powershell" -ArgumentList $psArgs -WorkingDirectory $scriptDir -WindowStyle $windowStyle | Out-Null
 }
 
 function Test-ApiHttpHealthy {
